@@ -28,6 +28,7 @@ GRID = "#2e2e2e"
 DIM = "#5a5a5a"
 TEXT = "#ffffff"
 GREEN = "#3ddc4a"      # активная дорожка, текущий парт
+FRAME = "#1d6b25"      # рамка активной дорожки: тот же зелёный, приглушённый
 BLUE = "#4a86e8"       # играет
 RED = "#ff3b30"        # запись, конец цикла
 ORANGE = "#ffb000"     # овердаб
@@ -550,11 +551,15 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         n = st["bpb"]
         step = (dx1 - dx0) / n
         rmax = min(hh * 0.3, step * 0.4)
+        # сильная доля заметно ярче и крупнее остальных: белая с ореолом, слабые — серые
         for i in range(n):
-            r = rmax if i == 0 else rmax * 0.6
+            r = rmax if i == 0 else rmax * 0.55
             on = i == beat_i
-            col = (TEXT if on else "#5a5a5a") if i == 0 else ("#d0d0d0" if on else "#2c2c2c")
+            col = (TEXT if on else "#4a4a4a") if i == 0 else ("#8a8a8a" if on else "#262626")
             cx = dx0 + step * (i + 0.5)
+            if i == 0 and on:
+                g = r * 1.35
+                c.create_oval(cx - g, cy - g, cx + g, cy + g, outline="#b0b0b0", width=2)
             c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=col, width=0)
         # шестерёнка: вкладка настроек
         gx = x1 - gear_w / 2
@@ -640,7 +645,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             else:
                 c.create_line(wx0, cy, wx1, cy, fill=GRID, width=1)
             if active:
-                c.create_rectangle(x0 + part_w + 2, ry0 + 2, wx1, ry1 - 2, outline=GREEN, width=2)
+                c.create_rectangle(x0 + part_w + 2, ry0 + 2, wx1, ry1 - 2, outline=FRAME, width=2)
         self._master(wx1 + 6, y0, x1 - 4, y1)
 
     # ---------- волны ----------
@@ -777,7 +782,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             if i:
                 c.create_line(cx0, y0, cx0, y1, fill="#1c1c1c", width=1)
             if active:
-                c.create_rectangle(cx0 + 2, y0 + 1, cx0 + cw - 2, y1 - 1, outline=GREEN, width=2)
+                c.create_rectangle(cx0 + 2, y0 + 1, cx0 + cw - 2, y1 - 1, outline=FRAME, width=2)
             # круг позиции с номером
             r = min(cw * 0.16, hh * 0.075)
             self._pie(mid, y0 + r + 3, r, col, tr["pos"] if has_loop else 0.0, empty=not has_loop)
