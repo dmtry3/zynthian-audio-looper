@@ -7,6 +7,7 @@ namespace alp {
 namespace {
 constexpr uint32_t kReserve = 4;     // кусков про запас, чтобы запись не упёрлась в ноль
 constexpr uint64_t kNoSeam = ~0ull;
+constexpr double kLatePressS = 0.2;  // опоздание нажатия после черты, которое ещё считается «на черте»
 
 inline uint64_t wrap_index(int64_t i, uint64_t L) {
   int64_t m = i % (int64_t)L;
@@ -149,10 +150,12 @@ void Looper::request_close(int ti) {
     return;
   }
   if (t.rec_target) return;  // фиксированная длина: закроется сама
-  // Free-длина в Quantize: конец цикла на ближайшей границе такта.
+  // Free-длина в Quantize: такт доигрывается до конца. Нажатие чуть позже черты
+  // (нога опоздала, не больше kLatePressS) закрывает цикл на этой черте.
   double bf = (double)bar_frames();
-  int64_t bars = std::llround((double)t.rec_frames / bf);
-  if (bars < 1) bars = 1;
+  int64_t bars = (int64_t)std::floor((double)t.rec_frames / bf);
+  const double late = (double)t.rec_frames - (double)bars * bf;
+  if (bars < 1 || late > kLatePressS * sr_) ++bars;
   uint64_t L = (uint64_t)std::llround(bars * bf);
   if (L <= t.rec_frames) {
     close_loop(ti, L);

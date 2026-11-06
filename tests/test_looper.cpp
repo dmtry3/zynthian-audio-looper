@@ -281,33 +281,47 @@ static void test_quantize() {
     CHECK(s.v().state == 3);
     CHECK(std::fabs(s.v().len_s - 2.0f) < 1e-3f);
   }
-  {  // Free-длина: отжали на 1,3 такта -> цикл 1 такт (граница уже прошла)
+  {  // Free-длина: отжали на 1,3 такта -> такт доигрывается, цикл 2 такта
     Sim s(64, true);
     s.ti.rolling = true;
     s.in_l = sine(200.0, 0.3f);
     s.cmd(Cmd::Rec);
-    s.run(BLOCK);
-    s.run(BAR - BLOCK);
+    s.run(BAR);                      // ждём черту
     CHECK(s.v().state == 2);
     s.run((uint64_t)(BAR * 1.3));
+    s.cmd(Cmd::Rec);
+    s.run(BLOCK);
+    CHECK(s.v().state == 2);         // ещё пишет
+    s.run((uint64_t)(BAR * 0.7));
+    CHECK(s.v().state == 3 && std::fabs(s.v().len_s - 4.0f) < 1e-3f);
+  }
+  {  // отжали на 100 мс позже черты 1-го такта -> цикл 1 такт, сразу играет
+    Sim s(64, true);
+    s.ti.rolling = true;
+    s.in_l = sine(200.0, 0.3f);
+    s.cmd(Cmd::Rec);
+    s.run(BAR);
+    s.run(BAR + 4800);
     s.cmd(Cmd::Rec);
     s.run(BLOCK);
     CHECK(s.v().state == 3 && std::fabs(s.v().len_s - 2.0f) < 1e-3f);
     s.run(BAR);
     CHECK(s.max_step(0, s.t) < 0.03f);
   }
-  {  // отжали на 1,7 такта -> пишем до 2 тактов
+  {  // то же в ROP: после нажатия посреди такта пишет до черты, потом овердаб
     Sim s(64, true);
     s.ti.rolling = true;
+    s.set.rop = true;
+    s.apply();
     s.in_l = sine(200.0, 0.3f);
     s.cmd(Cmd::Rec);
     s.run(BAR);
-    s.run((uint64_t)(BAR * 1.7));
+    s.run((uint64_t)(BAR * 1.3));
     s.cmd(Cmd::Rec);
     s.run(BLOCK);
     CHECK(s.v().state == 2);
-    s.run(BAR);
-    CHECK(s.v().state == 3 && std::fabs(s.v().len_s - 4.0f) < 1e-3f);
+    s.run((uint64_t)(BAR * 0.7));
+    CHECK(s.v().state == 4 && std::fabs(s.v().len_s - 4.0f) < 1e-3f);
   }
   {  // транспорт стоит, лупов нет: запись сразу
     Sim s(64, true);
