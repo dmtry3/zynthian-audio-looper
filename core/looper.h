@@ -72,12 +72,14 @@ class Looper {
   void process(const float* in_l, const float* in_r, float* out_l, float* out_r, uint32_t n, const TimeInfo& t);
   bool take_work(WorkMsg& m);
   void work_done(const WorkResp& r);
+  void cancel_work();  // хост не принял задание: вернуть всё как было
 
   // рабочий поток
   void do_work(const WorkMsg& m, WorkResp& r);
 
   // RT: состояние
   int active() const { return active_; }
+  double grid_beats() const { return beats_; }  // доли по сетке лупера (при стоящем транспорте — от первой записи)
   TrackView view(int i) const;
   float pool_fill() const;
   uint32_t free_chunks() const { return pool_.free_chunks(); }

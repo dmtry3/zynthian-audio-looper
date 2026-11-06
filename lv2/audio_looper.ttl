@@ -7,6 +7,10 @@
 @prefix pprops: <http://lv2plug.in/ns/ext/port-props#> .
 @prefix doap:   <http://usefulinc.com/ns/doap#> .
 @prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix work:   <http://lv2plug.in/ns/ext/worker#> .
+@prefix state:  <http://lv2plug.in/ns/ext/state#> .
+@prefix patch:  <http://lv2plug.in/ns/ext/patch#> .
+@prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
 <urn:audiolooper:looper#g_rec> a pg:Group ; lv2:symbol "g_rec" ; lv2:name "Record" ; lv2:index 0 ; lv2:displayPriority 60 .
 <urn:audiolooper:looper#g_track> a pg:Group ; lv2:symbol "g_track" ; lv2:name "Track" ; lv2:index 1 ; lv2:displayPriority 50 .
@@ -19,8 +23,20 @@
     doap:name "Audio Looper" ;
     lv2:minorVersion 0 ;
     lv2:microVersion 1 ;
-    lv2:requiredFeature urid:map ;
+    lv2:requiredFeature urid:map , work:schedule ;
     lv2:optionalFeature lv2:hardRTCapable ;
+    lv2:extensionData work:interface , state:interface ;
+    patch:writable
+        <urn:audiolooper:looper#rec_order> ,
+        <urn:audiolooper:looper#mode> ,
+        <urn:audiolooper:looper#len1> ,
+        <urn:audiolooper:looper#len2> ,
+        <urn:audiolooper:looper#len3> ,
+        <urn:audiolooper:looper#len4> ,
+        <urn:audiolooper:looper#fade_out> ,
+        <urn:audiolooper:looper#fade_in> ,
+        <urn:audiolooper:looper#rev_time> ,
+        <urn:audiolooper:looper#mute_q> ;
     lv2:port
     [
         a lv2:InputPort , lv2:AudioPort ; lv2:index 0 ; lv2:symbol "in_l" ; lv2:name "In L" ;
@@ -33,7 +49,8 @@
     ] , [
         a lv2:InputPort , atom:AtomPort ;
         atom:bufferType atom:Sequence ;
-        atom:supports midi:MidiEvent , time:Position ;
+        atom:supports midi:MidiEvent , time:Position , patch:Message ;
+        lv2:designation lv2:control ;
         lv2:index 4 ; lv2:symbol "events_in" ; lv2:name "MIDI In" ;
     ] , [
         a lv2:InputPort , lv2:ControlPort ;
@@ -185,4 +202,157 @@
         a lv2:OutputPort , lv2:ControlPort ;
         lv2:index 37 ; lv2:symbol "o_pos_cnt" ; lv2:name "Out: Pos Msgs" ;
         lv2:minimum 0 ; lv2:maximum 1000000 ;
+    ] , [
+        a lv2:OutputPort , atom:AtomPort ;
+        atom:bufferType atom:Sequence ;
+        atom:supports patch:Message ;
+        lv2:index 38 ; lv2:symbol "events_out" ; lv2:name "Events Out" ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 39 ; lv2:symbol "o_st1" ; lv2:name "Out: State 1" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 40 ; lv2:symbol "o_st2" ; lv2:name "Out: State 2" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 41 ; lv2:symbol "o_st3" ; lv2:name "Out: State 3" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 42 ; lv2:symbol "o_st4" ; lv2:name "Out: State 4" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 43 ; lv2:symbol "o_pos1" ; lv2:name "Out: Pos 1" ;
+        lv2:minimum 0 ; lv2:maximum 1 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 44 ; lv2:symbol "o_pos2" ; lv2:name "Out: Pos 2" ;
+        lv2:minimum 0 ; lv2:maximum 1 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 45 ; lv2:symbol "o_pos3" ; lv2:name "Out: Pos 3" ;
+        lv2:minimum 0 ; lv2:maximum 1 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 46 ; lv2:symbol "o_pos4" ; lv2:name "Out: Pos 4" ;
+        lv2:minimum 0 ; lv2:maximum 1 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 47 ; lv2:symbol "o_len1" ; lv2:name "Out: Len 1" ;
+        lv2:minimum 0 ; lv2:maximum 100000 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 48 ; lv2:symbol "o_len2" ; lv2:name "Out: Len 2" ;
+        lv2:minimum 0 ; lv2:maximum 100000 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 49 ; lv2:symbol "o_len3" ; lv2:name "Out: Len 3" ;
+        lv2:minimum 0 ; lv2:maximum 100000 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 50 ; lv2:symbol "o_len4" ; lv2:name "Out: Len 4" ;
+        lv2:minimum 0 ; lv2:maximum 100000 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 51 ; lv2:symbol "o_flags" ; lv2:name "Out: Flags" ;
+        lv2:minimum 0 ; lv2:maximum 65535 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 52 ; lv2:symbol "o_pool" ; lv2:name "Out: Pool" ;
+        lv2:minimum 0 ; lv2:maximum 1 ;
     ] .
+
+# Настройки: LV2-параметры (patch:Set), скрыты со страниц, меняются на вкладке настроек виджета.
+<urn:audiolooper:looper#rec_order>
+    a lv2:Parameter ;
+    lv2:symbol "rec_order" ;
+    rdfs:label "Rec Order" ;
+    rdfs:range atom:Int ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#mode>
+    a lv2:Parameter ;
+    lv2:symbol "mode" ;
+    rdfs:label "Mode" ;
+    rdfs:range atom:Int ;
+    lv2:default 1 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#len1>
+    a lv2:Parameter ;
+    lv2:symbol "len1" ;
+    rdfs:label "Length 1" ;
+    rdfs:range atom:Int ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 16 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#len2>
+    a lv2:Parameter ;
+    lv2:symbol "len2" ;
+    rdfs:label "Length 2" ;
+    rdfs:range atom:Int ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 16 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#len3>
+    a lv2:Parameter ;
+    lv2:symbol "len3" ;
+    rdfs:label "Length 3" ;
+    rdfs:range atom:Int ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 16 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#len4>
+    a lv2:Parameter ;
+    lv2:symbol "len4" ;
+    rdfs:label "Length 4" ;
+    rdfs:range atom:Int ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 16 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#fade_out>
+    a lv2:Parameter ;
+    lv2:symbol "fade_out" ;
+    rdfs:label "Fade Out" ;
+    rdfs:range atom:Int ;
+    lv2:default 200 ; lv2:minimum 10 ; lv2:maximum 4000 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#fade_in>
+    a lv2:Parameter ;
+    lv2:symbol "fade_in" ;
+    rdfs:label "Fade In" ;
+    rdfs:range atom:Int ;
+    lv2:default 200 ; lv2:minimum 10 ; lv2:maximum 4000 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#rev_time>
+    a lv2:Parameter ;
+    lv2:symbol "rev_time" ;
+    rdfs:label "Reverse Time" ;
+    rdfs:range atom:Int ;
+    lv2:default 50 ; lv2:minimum 5 ; lv2:maximum 1000 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#mute_q>
+    a lv2:Parameter ;
+    lv2:symbol "mute_q" ;
+    rdfs:label "Mute Quant" ;
+    rdfs:range atom:Int ;
+    lv2:default 2 ; lv2:minimum 0 ; lv2:maximum 3 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+

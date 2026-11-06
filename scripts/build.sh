@@ -7,5 +7,5 @@ mkdir -p "$B"
 cp "$ROOT/lv2/manifest.ttl" "$ROOT/lv2/audio_looper.ttl" "$B/"
 g++ -std=c++17 -O2 -fPIC -shared -Wall -Wextra -fno-exceptions -fno-rtti -fvisibility=hidden \
     $(pkg-config --cflags lv2) \
-    -o "$B/audio_looper.so" "$ROOT/lv2/audio_looper.cpp" -lm
+    -o "$B/audio_looper.so" "$ROOT/lv2/audio_looper.cpp" "$ROOT"/core/*.cpp -lm
 echo "Built: $B"

@@ -424,6 +424,20 @@ bool Looper::take_work(WorkMsg& m) {
   return true;
 }
 
+void Looper::cancel_work() {
+  if (!job_running_) return;
+  job_running_ = false;
+  Track& t = tr_[job_.track];
+  t.busy = false;
+  pool_.free_buf(job_.dst);
+  if (job_.op == 1) push_undo(t, Entry{U_DELTA, job_.layer});
+  else if (t.redo_n < kMaxUndo) t.redo[t.redo_n++] = Entry{U_DELTA, job_.layer};
+  if (reset_all_pending_) {
+    reset_all_pending_ = false;
+    reset_all_now();
+  }
+}
+
 void Looper::do_work(const WorkMsg& m, WorkResp& r) {
   const Buf& src = pool_.buf(m.src);
   const Buf& lay = pool_.buf(m.layer);
