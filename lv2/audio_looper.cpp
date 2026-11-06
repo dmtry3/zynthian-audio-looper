@@ -35,15 +35,17 @@ using namespace alp;
 constexpr size_t kPoolBytes = (size_t)2 << 30;  // 2 ГБ по ТЗ (настройка размера — этап 6)
 
 // Порядок совпадает с lv2:index в audio_looper.ttl.
+// Входные контроллеры идут первыми (0..17): Zynthian нумерует LV2-параметры сразу после
+// их количества, и порт с бо́льшим номером затёрся бы параметром (так пропадала страница Mix).
 enum Port : uint32_t {
-  P_IN_L, P_IN_R, P_OUT_L, P_OUT_R, P_EVENTS,
   // страницы 1–4: контроллеры-действия
   P_REC, P_UNDO, P_REDO, P_RESET,
   P_MUTE, P_REVERSE, P_LOCK, P_TRK_NEXT,
   P_TRK_PREV, P_PART_NEXT, P_PART_PREV, P_PLAY,
   P_W_LOOP, P_W_MIXER,
-  // страница 5: плавные (уровень, панорама, master, скорость — этапы 4 и 5)
+  // страница 5: плавные (уровень, панорама, master, скорость)
   P_LEVEL, P_PAN, P_MASTER, P_SPEED,
+  P_IN_L, P_IN_R, P_OUT_L, P_OUT_R, P_EVENTS,
   // выходы только для чтения
   O_TRACK, O_PART, O_PEND, O_WIDGET, O_ACTION, O_ACT_CNT, O_HELD,
   O_BPM, O_BAR, O_BEAT, O_BPB, O_ROLLING, O_TSRC, O_CLK_BPM, O_POS_CNT,
@@ -125,7 +127,7 @@ void init_params() {
     std::snprintf(kParams[PR_CHM0 + t].sym, 16, "chm%d", t + 1);
   }
   kParams[PR_DRY] = ParamDef{"dry", 0.0f, kMinDb, 6.0f, true};
-  kParams[PR_MASTER] = ParamDef{"master", 0.0f, kMinDb, 6.0f, true};
+  kParams[PR_MASTER] = ParamDef{"mst_db", 0.0f, kMinDb, 6.0f, true};  // не "master": так называется порт
   kParams[PR_LIMIT] = ParamDef{"limiter", 1.0f, 0.0f, 1.0f, false};
   kParams[PR_TMUTE] = ParamDef{"tmute", 0.0f, 0.0f, 4.0f, false};
 }

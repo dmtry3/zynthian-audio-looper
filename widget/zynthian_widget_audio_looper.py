@@ -749,11 +749,11 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         half = side_w / 2.0
         lab_h = max(10, hh * 0.07)
         top_h = max(14, hh * 0.09)
-        for k, (sym, label) in enumerate((("dry", "DRY"), ("master", "MASTER"))):
+        for k, (sym, label) in enumerate((("dry", "DRY"), ("mst_db", "MASTER"))):
             mid = sx0 + half * (k + 0.5)
             self._text(mid, y0 + top_h / 2 + 2, label, half * 0.9, top_h * 0.8, TEXT)
             db = self._zfloat(sym)
-            if sym == "master":
+            if sym == "mst_db":
                 lim = self._zval("limiter") == 1
                 ly0 = y0 + top_h + 6
                 c.create_rectangle(mid - half * 0.4, ly0, mid + half * 0.4, ly0 + top_h,

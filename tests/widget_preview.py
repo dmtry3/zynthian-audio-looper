@@ -101,7 +101,7 @@ class Processor:
             self.controllers_dict["pan%d" % i] = Ctrl("pan%d" % i, 0, -100, 100)
             self.controllers_dict["chm%d" % i] = Ctrl("chm%d" % i, 0, 0, 1)
         self.controllers_dict["dry"] = Ctrl("dry", 0.0, -60.0, 6.0)
-        self.controllers_dict["master"] = Ctrl("master", 0.0, -60.0, 6.0)
+        self.controllers_dict["mst_db"] = Ctrl("mst_db", 0.0, -60.0, 6.0)
         self.controllers_dict["limiter"] = Ctrl("limiter", 1, 0, 1)
         self.controllers_dict["tmute"] = Ctrl("tmute", 0, 0, 4)
 
@@ -362,8 +362,8 @@ def main():
     check("M дорожки 2 — команда tmute=2", cd["tmute"].value == 2)
     tap("lim", None)
     check("LIM выключает ограничитель", cd["limiter"].value == 0)
-    tap("fader", "master", fy=0.95)
-    check("фейдер Master", cd["master"].value < -20.0)
+    tap("fader", "mst_db", fy=0.95)
+    check("фейдер Master", cd["mst_db"].value < -20.0)
     no_overlap("800x480, Mixer после касаний")
     m["o_widget"], m["o_part"] = 0.0, 0.0
     wdg.update()

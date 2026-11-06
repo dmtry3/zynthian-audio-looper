@@ -12,6 +12,7 @@ test: build_test/test_core build_test/test_looper build_test/test_plugin
 	./build_test/test_core
 	./build_test/test_looper
 	./build_test/test_plugin
+	python3 tests/check_ttl.py
 
 build_test/test_core: tests/test_core.cpp $(CORE_H)
 	@mkdir -p build_test
