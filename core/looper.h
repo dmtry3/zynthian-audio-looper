@@ -28,6 +28,7 @@ struct Settings {
   float fade_in_ms = 200.0f;   // unmute
   float reverse_ms = 50.0f;    // время разворота
   int mute_q = 2;             // 0 сразу, 1 доля, 2 такт, 3 конец цикла
+  int part_q = 3;             // смена парта: 0 сразу, 1 доля, 2 такт, 3 конец цикла (самого длинного лупа)
   float dry = 1.0f;           // сухой сигнал на выходе
 };
 
@@ -195,6 +196,7 @@ class Looper {
   void switch_part(int p);
   void clone_into(int from, int to);
   void clear_track(int k);
+  void default_locks();
 
   // undo/redo и память
   void push_undo(Track& t, Entry e);
@@ -231,7 +233,9 @@ class Looper {
   int cur_part_ = 0;
   int pend_part_ = -1;      // парт, ждущий границы (-1 нет)
   bool clones_pending_ = false;
-  bool rec_after_switch_ = false;  // Rec нажат, пока переход ждёт: запись в новом парте на границе
+  bool rec_after_switch_ = false;
+  bool part_due_ = false;     // конец цикла: переход в начале следующего кадра
+  int master_ = -1;           // самая длинная играющая дорожка текущего парта (её цикл — «конец цикла»)  // Rec нажат, пока переход ждёт: запись в новом парте на границе
   int ps_pending_ = 0;      // ждёт границы: 1 — стоп, 2 — старт
   // рабочий поток: одно задание за раз
   bool job_pending_ = false, job_running_ = false;

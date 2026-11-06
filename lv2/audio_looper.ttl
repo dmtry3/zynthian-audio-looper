@@ -36,7 +36,8 @@
         <urn:audiolooper:looper#fade_out> ,
         <urn:audiolooper:looper#fade_in> ,
         <urn:audiolooper:looper#rev_time> ,
-        <urn:audiolooper:looper#mute_q> ;
+        <urn:audiolooper:looper#mute_q> ,
+        <urn:audiolooper:looper#part_q> ;
     lv2:port
     [
         a lv2:InputPort , lv2:AudioPort ; lv2:index 0 ; lv2:symbol "in_l" ; lv2:name "In L" ;
@@ -360,3 +361,11 @@
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
+<urn:audiolooper:looper#part_q>
+    a lv2:Parameter ;
+    lv2:symbol "part_q" ;
+    rdfs:label "Part Quant" ;
+    rdfs:range atom:Int ;
+    lv2:default 3 ; lv2:minimum 0 ; lv2:maximum 3 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .

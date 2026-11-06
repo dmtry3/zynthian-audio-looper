@@ -90,6 +90,7 @@ class Processor:
             "rec_order": Ctrl("rec_order", 0, 0, 1), "mode": Ctrl("mode", 1, 0, 1),
             "fade_out": Ctrl("fade_out", 200, 10, 4000), "fade_in": Ctrl("fade_in", 200, 10, 4000),
             "rev_time": Ctrl("rev_time", 50, 5, 1000), "mute_q": Ctrl("mute_q", 2, 0, 3),
+            "part_q": Ctrl("part_q", 3, 0, 3),
         }
         for i in range(1, 5):
             self.controllers_dict["len%d" % i] = Ctrl("len%d" % i, 0, 0, 16)

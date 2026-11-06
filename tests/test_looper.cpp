@@ -646,8 +646,7 @@ static void test_parts_lock() {
   s.cmd(Cmd::Rec);
   at(2.0 + 0.02);
   s.in_l = [](uint64_t) { return 0.0f; };
-  s.cmd(Cmd::Lock);
-  CHECK(s.v(0).locked);
+  CHECK(s.v(0).locked && !s.v(1).locked);  // Lock по умолчанию на первой дорожке
   // дорожка 2: синус 300 Гц, со 2-го такта
   s.cmd(Cmd::TrackNext);
   s.in_l = sine(300.0, 0.3f);
@@ -748,8 +747,7 @@ static void test_parts_edges() {
     s.cmd(Cmd::PartNext);
     s.run(BAR);
     CHECK(s.lp->part() == 1);
-    s.cmd(Cmd::TrackNext);
-    CHECK(s.lp->active() == 1);
+    CHECK(s.lp->active() == 1);  // первая — Lock-копия, активная — первая свободная
     s.cmd(Cmd::Rec);
     s.run(BAR + BAR / 2);
     CHECK(s.v(1).state == 2);
@@ -770,11 +768,11 @@ static void test_parts_edges() {
     s.cmd(Cmd::Rec);
     CHECK(s.lp->rec_after_switch() && s.v(0).state == 3);  // в старом парте не овердаб
     s.run(BAR / 2 + BLOCK * 2);
-    CHECK(s.lp->part() == 1 && s.lp->active() == 0 && s.v(0).state == 2);  // пишет с границы
+    CHECK(s.lp->part() == 1 && s.lp->active() == 1 && s.v(1).state == 2);  // пишет с границы
     s.run(BAR);
     s.cmd(Cmd::Rec);
     s.run(BLOCK * 4);
-    CHECK(s.v(0).state == 3 && std::fabs(s.v(0).len_s - 2.0f) < 1e-3f);
+    CHECK(s.v(1).state == 3 && std::fabs(s.v(1).len_s - 2.0f) < 1e-3f);
     s.cmd(Cmd::PartPrev);   // назад: старый парт без овердаба (1 слой — основа)
     s.run(BAR + BLOCK * 4);
     CHECK(s.lp->part() == 0 && s.v(0).state == 3 && s.v(0).layers == 1);
@@ -793,7 +791,6 @@ static void test_parts_edges() {
     s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
     s.cmd(Cmd::Rec);
     s.run(2 * BAR + BLOCK * 8);
-    s.cmd(Cmd::Lock);
     s.in_l = sine(400.0, 0.2f);
     s.run(BAR / 4);
     s.cmd(Cmd::Rec);  // овердаб
@@ -805,6 +802,31 @@ static void test_parts_edges() {
     s.run(BAR);
     CHECK(rms(s.slice(s.t - BAR / 2, BAR / 2)) > 0.1f);
     CHECK(s.max_step(2 * BAR, s.t) < 0.05f);
+  }
+}
+
+// Смена парта ждёт конца цикла самого длинного лупа (PART AT = LOOP END, по умолчанию);
+// PART AT = BAR — ближайший такт.
+static void test_part_at_loop_end() {
+  const uint64_t BAR = 96000;
+  for (int q : {3, 2}) {
+    Sim s(64, true);
+    s.ti.rolling = true;
+    s.set.length[0] = 2;
+    s.set.part_q = q;
+    s.apply();
+    s.in_l = sine(200.0, 0.3f);
+    s.run(BLOCK);
+    s.cmd(Cmd::Rec);
+    s.run(3 * BAR + BLOCK * 8);  // цикл 2 такта: с 1-го по 3-й
+    s.in_l = [](uint64_t) { return 0.0f; };
+    CHECK(s.v(0).state == 3 && std::fabs(s.v(0).len_s - 4.0f) < 1e-3f);
+    s.run((uint64_t)(BAR * 0.5) - BLOCK * 8);  // 3,5 такта: середина первого такта цикла
+    s.cmd(Cmd::PartNext);
+    s.run(BAR / 2 + BLOCK);                    // прошли черту 4-го такта (середина цикла)
+    CHECK(s.lp->part() == (q == 3 ? 0 : 1));
+    s.run(BAR);                                 // прошли конец цикла (5-й такт)
+    CHECK(s.lp->part() == 1);
   }
 }
 
@@ -820,6 +842,7 @@ int main() {
   test_peaks();
   test_parts_lock();
   test_parts_edges();
+  test_part_at_loop_end();
   test_quantize();
   test_rop();
   test_reset();

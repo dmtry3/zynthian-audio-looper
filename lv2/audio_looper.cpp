@@ -87,7 +87,10 @@ const ButtonDef kDefs[kButtons] = {
 };
 
 // Настройки: LV2-параметры. Порядок и значения как в audio_looper.ttl.
-enum Param { PR_REC_ORDER, PR_MODE, PR_LEN1, PR_LEN2, PR_LEN3, PR_LEN4, PR_FADE_OUT, PR_FADE_IN, PR_REV, PR_MUTE_Q, PR_COUNT };
+enum Param {
+  PR_REC_ORDER, PR_MODE, PR_LEN1, PR_LEN2, PR_LEN3, PR_LEN4, PR_FADE_OUT, PR_FADE_IN, PR_REV, PR_MUTE_Q, PR_PART_Q,
+  PR_COUNT
+};
 struct ParamDef {
   const char* sym;
   int def, lo, hi;
@@ -95,7 +98,7 @@ struct ParamDef {
 const ParamDef kParams[PR_COUNT] = {
     {"rec_order", 0, 0, 1}, {"mode", 1, 0, 1},       {"len1", 0, 0, 16},      {"len2", 0, 0, 16},
     {"len3", 0, 0, 16},     {"len4", 0, 0, 16},      {"fade_out", 200, 10, 4000}, {"fade_in", 200, 10, 4000},
-    {"rev_time", 50, 5, 1000}, {"mute_q", 2, 0, 3},
+    {"rev_time", 50, 5, 1000}, {"mute_q", 2, 0, 3}, {"part_q", 3, 0, 3},
 };
 constexpr uint32_t kReportPerRun = 4;  // ответов на patch:Get за один run()
 
@@ -143,6 +146,7 @@ struct Plugin {
     s.fade_in_ms = (float)vals[PR_FADE_IN];
     s.reverse_ms = (float)vals[PR_REV];
     s.mute_q = vals[PR_MUTE_Q];
+    s.part_q = vals[PR_PART_Q];
     s.dry = 1.0f;
     looper->set_settings(s);
   }

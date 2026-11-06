@@ -93,6 +93,7 @@ SETTINGS = [
     ("rec_order", "REC ORDER", [0, 1], lambda v: ("RPO", "ROP")[v]),
     ("mode", "MODE", [0, 1], lambda v: ("FREE", "QUANTIZE")[v]),
     ("mute_q", "MUTE AT", [0, 1, 2, 3], lambda v: ("NOW", "BEAT", "BAR", "LOOP END")[v]),
+    ("part_q", "PART AT", [0, 1, 2, 3], lambda v: ("NOW", "BEAT", "BAR", "LOOP END")[v]),
     ("fade_out", "FADE OUT", FADE_STEPS, _ms),
     ("fade_in", "FADE IN", FADE_STEPS, _ms),
     ("rev_time", "REVERSE", REV_STEPS, _ms),
@@ -101,7 +102,7 @@ SETTINGS = [
     ("len3", "LENGTH 3", list(range(17)), _len),
     ("len4", "LENGTH 4", list(range(17)), _len),
 ]
-SETTING_DEFAULTS = {"rec_order": 0, "mode": 1, "mute_q": 2, "fade_out": 200, "fade_in": 200, "rev_time": 50,
+SETTING_DEFAULTS = {"rec_order": 0, "mode": 1, "mute_q": 2, "part_q": 3, "fade_out": 200, "fade_in": 200, "rev_time": 50,
                     "len1": 0, "len2": 0, "len3": 0, "len4": 0}
 
 

@@ -20,6 +20,7 @@ bool Looper::init(double sample_rate, size_t pool_bytes) {
   xf_ = (uint32_t)std::lround(sr_ * 0.010);
   if (xf_ < 16) xf_ = 16;
   for (auto& t : tr_) t.seam_t = kNoSeam;
+  default_locks();
   // Если столько памяти не дали, пробуем меньше: плагин должен загрузиться.
   for (size_t b = pool_bytes; b >= ((size_t)32 << 20); b /= 2)
     if (pool_.init(b, 4096)) return true;
@@ -99,8 +100,11 @@ void Looper::command(Cmd c) {
       }
       const int target = (cur_part_ + d) % kParts;
       // из пустого парта и без квантования — сразу
-      if (!part_has_content(cur_part_) || !set_.quantize || set_.mute_q == 0) switch_part(target);
-      else pend_part_ = target;
+      // сразу: текущий парт пустой, PART AT = сразу, или Free без «конца цикла» (тактов нет)
+      if (!part_has_content(cur_part_) || set_.part_q == 0 || (!set_.quantize && set_.part_q != 3))
+        switch_part(target);
+      else
+        pend_part_ = target;
       break;
     }
     case Cmd::Lock: t.locked = !t.locked; break;
@@ -384,6 +388,7 @@ void Looper::reset_all_now() {
     t.undo_after_dub = t.reset_after_dub = false;
     t.seam_t = kNoSeam;
   }
+  default_locks();
 }
 
 void Looper::start_reverse(Track& t, double n) {
@@ -756,7 +761,7 @@ void Looper::on_grid(bool beat, bool bar) {
     apply_playstop(ps_pending_ == 1);
     ps_pending_ = 0;
   }
-  if (pend_part_ >= 0 && ((set_.mute_q == 1 && beat) || (set_.mute_q >= 2 && bar))) switch_part(pend_part_);
+  if (pend_part_ >= 0 && ((set_.part_q == 1 && beat) || (set_.part_q == 2 && bar))) switch_part(pend_part_);
 }
 
 void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
@@ -863,6 +868,7 @@ void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
     wrapped = true;
   }
   if (wrapped && t.mute_pending && set_.mute_q == 3) apply_mute(ti);
+  if (wrapped && ti == master_ && pend_part_ >= 0 && set_.part_q == 3) part_due_ = true;
 }
 
 void Looper::set_time(const TimeInfo& ti) {
@@ -966,6 +972,11 @@ uint32_t Looper::parts_mask() const {
   return m;
 }
 
+// По умолчанию первая дорожка каждого парта с Lock (решение пользователя).
+void Looper::default_locks() {
+  for (int p = 0; p < kParts; ++p) tr_[p * kSlots].locked = true;
+}
+
 // Дорожка становится пустой и без истории (под Lock-копию в пустом парте).
 void Looper::clear_track(int k) {
   Track& t = tr_[k];
@@ -983,6 +994,7 @@ void Looper::clear_track(int k) {
   const bool inflight = t.pinflight;
   t = Track();
   t.seam_t = kNoSeam;
+  t.locked = k % kSlots == 0;
   t.pgen = pgen + 1;
   t.pdirty = true;
   t.pinflight = inflight;
@@ -1111,6 +1123,17 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
                      const TimeInfo& ti) {
   set_time(ti);
   const float dry = set_.dry;
+  // «конец цикла» для смены парта — по самой длинной играющей дорожке текущего парта
+  master_ = -1;
+  uint64_t longest = 0;
+  for (int k = idx(0); k < idx(0) + kSlots; ++k) {
+    const Track& t = tr_[k];
+    if ((t.st == TState::Play || t.st == TState::Dub) && t.len > longest) {
+      longest = t.len;
+      master_ = k;
+    }
+  }
+  if (pend_part_ >= 0 && set_.part_q == 3 && master_ < 0) part_due_ = true;  // нечему доигрывать
   for (uint32_t i = 0; i < n; ++i) {
     // beats_ — доля этого кадра; граница там, где доля перешла через целое с прошлого кадра
     if (set_.quantize) {
@@ -1119,6 +1142,10 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
     } else {
       for (int k = 0; k < kTracks; ++k)
         if (tr_[k].st == TState::Armed) start_rec(k);
+    }
+    if (part_due_) {  // самый длинный луп дошёл до конца цикла: переход
+      part_due_ = false;
+      if (pend_part_ >= 0) switch_part(pend_part_);
     }
     if (clones_pending_) {
       clones_pending_ = false;
