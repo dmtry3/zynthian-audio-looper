@@ -73,6 +73,25 @@ class Pool {
   // Сколько кусков занимает буфер.
   uint32_t used_chunks(int32_t b) const;
 
+  // Чтение для рабочего потока: буфер мог уже вернуться в пул и быть переиспользован,
+  // поэтому проверяем номера кусков (неверные данные дадут только неточную волну).
+  void read_safe(const Buf& b, uint64_t f, float& l, float& r) const {
+    l = r = 0.0f;
+    uint32_t i = (uint32_t)(f >> kChunkShift);
+    uint32_t id;
+    if (i < kInline) {
+      id = b.inl[i];
+    } else {
+      uint32_t ov = b.ovf;
+      if (ov >= n_ || i - kInline >= kOvfEntries) return;
+      id = table(ov)[i - kInline];
+    }
+    if (id >= n_) return;
+    const Chunk* c = chunk(id);
+    l = c->l[f & kChunkMask];
+    r = c->r[f & kChunkMask];
+  }
+
   // Чтение кадра (пустой кусок = тишина).
   void read(const Buf& b, uint64_t f, float& l, float& r) const {
     uint32_t id = entry(b, (uint32_t)(f >> kChunkShift));

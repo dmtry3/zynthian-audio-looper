@@ -7,6 +7,10 @@
 #include <cstring>
 #include <new>
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
 #include <lv2/atom/atom.h>
 #include <lv2/atom/forge.h>
 #include <lv2/atom/util.h>
@@ -112,6 +116,8 @@ struct Plugin {
   LV2_Atom_Forge forge;
   LV2_Worker_Schedule* schedule = nullptr;
   Looper* looper = nullptr;
+  PeakShm* peaks = nullptr;  // общая память с виджетом: /dev/shm/audio_looper_<pid>
+  char peaks_path[64] = {};
   Button buttons[kButtons];
   TempoClock clock;
   MidiClock midi_clock;
@@ -312,6 +318,25 @@ LV2_Handle instantiate(const LV2_Descriptor*, double rate, const char*, const LV
   lv2_atom_forge_init(&pl->forge, map);
   pl->apply_settings();
 
+  // Пики волн для виджета: файл в /dev/shm, виджет находит его по pid процесса jalv.
+  std::snprintf(pl->peaks_path, sizeof pl->peaks_path, "/dev/shm/audio_looper_%d", (int)getpid());
+  int fd = open(pl->peaks_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+  if (fd >= 0) {
+    if (ftruncate(fd, (off_t)sizeof(PeakShm)) == 0) {
+      void* mem = mmap(nullptr, sizeof(PeakShm), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+      if (mem != MAP_FAILED) {
+        pl->peaks = static_cast<PeakShm*>(mem);
+        std::memset(pl->peaks, 0, sizeof(PeakShm));
+        pl->peaks->ncols = kPeakCols;
+        pl->peaks->ntracks = kTracks;
+        pl->peaks->nlayers = kPeakLayers;
+        pl->peaks->magic = kPeakMagic;
+        pl->looper->set_peaks(pl->peaks);
+      }
+    }
+    close(fd);
+  }
+
   pl->clock.set_sample_rate(rate);
   pl->midi_clock.set_sample_rate(rate);
   for (uint32_t i = 0; i < kButtons; ++i) {
@@ -369,8 +394,11 @@ void run(LV2_Handle h, uint32_t n) {
               static_cast<float*>(pl->ports[P_OUT_L]), static_cast<float*>(pl->ports[P_OUT_R]), n, ti);
 
   WorkMsg m;
-  if (lp->take_work(m)) {
-    if (pl->schedule->schedule_work(pl->schedule->handle, sizeof m, &m) != LV2_WORKER_SUCCESS) lp->cancel_work();
+  while (lp->take_work(m)) {
+    if (pl->schedule->schedule_work(pl->schedule->handle, sizeof m, &m) != LV2_WORKER_SUCCESS) {
+      lp->cancel_work(m);
+      break;
+    }
   }
 
   report_params(pl);
@@ -413,6 +441,10 @@ void run(LV2_Handle h, uint32_t n) {
 
 void cleanup(LV2_Handle h) {
   Plugin* pl = static_cast<Plugin*>(h);
+  if (pl->peaks) {
+    munmap(pl->peaks, sizeof(PeakShm));
+    unlink(pl->peaks_path);
+  }
   delete pl->looper;
   delete pl;
 }

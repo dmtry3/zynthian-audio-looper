@@ -7,7 +7,11 @@
 #   Настройки (шестерёнка): RPO/ROP, Free/Quantize, длины дорожек, fade, reverse, квантование mute.
 # Чёрный фон без плашек, цвет несёт состояние. Виджет читает выходные порты (self.monitors),
 # настройки пишет через контроллеры Zynthian (это LV2-параметры плагина), ничего не ждёт.
+import glob
 import math
+import mmap
+import os
+import struct
 import time
 import tkinter
 import tkinter.font
@@ -52,6 +56,20 @@ ACTIONS = [
     ("LOOP", TEXT),
     ("MIXER", TEXT),
 ]
+# Пики волн: общая память с плагином, раскладка как PeakShm в core/peaks.h
+PK_MAGIC = 0x31504C41
+PK_COLS = 512
+PK_LAYERS = 8
+PK_HDR = 16
+PK_TRACK = 16 + 4 * PK_LAYERS + 2 * PK_COLS * (2 + PK_LAYERS)
+PK_SUM = 16 + 4 * PK_LAYERS             # смещения внутри дорожки
+PK_DUB = PK_SUM + 2 * PK_COLS
+PK_LAY = PK_DUB + 2 * PK_COLS
+PEAKS_PATH_OVERRIDE = None              # для превью без Zynthian
+# Цвета слоёв овердабов (полупрозрачно поверх волны), по номеру слоя
+LAYER_COLORS = ["#ff6b6b", "#ffd43b", "#69db7c", "#4dabf7", "#da77f2", "#ff922b", "#38d9a9", "#f783ac"]
+FRAME_MS = 33                           # своя перерисовка 30 кадров в секунду
+
 # Состояния дорожки (порт o_stN, как TrackView::state в core/looper.h)
 ST_EMPTY, ST_ARMED, ST_REC, ST_PLAY, ST_DUB = range(5)
 ACTION_HOLD_S = 1.5     # сколько подпись последнего действия горит вместо подсказки
@@ -127,6 +145,13 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         self.last_widget = None
         self.settings_open = False
         self.hits = []          # (x0, y0, x1, y1, действие, аргумент) для касаний
+        self.mm = None
+        self.mm_path = None
+        self.peaks = [None] * 4  # кэш пиков по дорожкам
+        self.geo = {}            # кэш многоугольников волн
+        self.mon_t = 0.0         # когда пришли значения портов (между ними позиция досчитывается)
+        self.flash_bar = None
+        self.after(FRAME_MS, self._tick)
 
     def on_size(self, event):
         if not super().on_size(event):
@@ -180,7 +205,22 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         return f
 
     def _fit(self, text, max_w, max_h, bold):
-        """Самый крупный шрифт, в котором text влезает в клетку; None, если не влезает совсем."""
+        """Самый крупный шрифт, в котором text влезает в клетку; None, если не влезает совсем.
+        Подбор дорогой (замеры текста), поэтому результат кэшируется."""
+        key = (text, int(max_w), int(max_h), bold)
+        try:
+            return self.fit_cache[key]
+        except AttributeError:
+            self.fit_cache = {}
+        except KeyError:
+            pass
+        if len(self.fit_cache) > 2000:
+            self.fit_cache.clear()
+        f = self._fit_measure(text, max_w, max_h, bold)
+        self.fit_cache[key] = f
+        return f
+
+    def _fit_measure(self, text, max_w, max_h, bold):
         px = max(6, int(max_h))
         while True:
             f = self._font(px, bold)
@@ -214,7 +254,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
     def _meter(self, x0, y0, x1, y1, level=0.0):
         """Сегментный индикатор: зелёный, сверху жёлтый и красный."""
         c = self.widget_canvas
-        n = max(6, int((y1 - y0) / 6))
+        n = max(6, int((y1 - y0) / 10))
         seg = (y1 - y0) / n
         lit = int(round(level * n))
         for i in range(n):
@@ -245,12 +285,30 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
 
     # ---------- кадр ----------
     def refresh_gui(self):
+        """Zynthian обновил значения портов: запоминаем время и рисуем."""
+        self.mon_t = time.monotonic()
+        self._draw()
+
+    def _tick(self):
+        """Своя перерисовка 30 раз в секунду: позиция и доли досчитываются между обновлениями."""
+        try:
+            if self.winfo_ismapped() and self.monitors:
+                self._draw()
+        except Exception:
+            pass
+        try:
+            self.after(FRAME_MS, self._tick)
+        except Exception:
+            pass
+
+    def _draw(self):
         m = self.monitors or {}
         c = self.widget_canvas
         c.delete("all")
         self.hits = []
         w, h = max(self.width, 120), max(self.height, 80)
         now = time.monotonic()
+        dt = min(0.5, max(0.0, now - self.mon_t)) if self.mon_t else 0.0
 
         flags = int(m.get("o_flags", 0))
         st = {
@@ -280,11 +338,22 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             })
         if not 0 <= st["act"] < len(ACTIONS):
             st["act"] = 0
+        # между обновлениями портов доли и позиции идут по времени
+        if dt > 0:
+            beat = st["beat"] + dt * st["bpm"] / 60.0
+            st["bar"] += int(beat // st["bpb"])
+            st["beat"] = beat % st["bpb"]
+            for tr in st["tracks"]:
+                if tr["state"] in (ST_PLAY, ST_DUB) and tr["len"] > 0 and not tr["stopped"]:
+                    d = dt / tr["len"]
+                    tr["pos"] = (tr["pos"] + (-d if tr["reversed"] else d)) % 1.0
 
-        # вспышка на сильной доле: по смене такта из аудиопотока
-        if self.last_bar is not None and st["bar"] != self.last_bar and st["src"]:
+        # вспышка на сильной доле: смена такта (досчитанная по позиции из аудиопотока)
+        fb = self.flash_bar
+        if fb is not None and st["src"] and (st["bar"] > fb or st["bar"] < fb - 1):
             self.flash_until = now + FLASH_S
-        self.last_bar = st["bar"]
+        if fb is None or st["bar"] > fb or st["bar"] < fb - 1:
+            self.flash_bar = st["bar"]
         if self.last_cnt is not None and st["cnt"] != self.last_cnt:
             self.action_until = now + ACTION_HOLD_S
         self.last_cnt = st["cnt"]
@@ -380,12 +449,15 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             num_col = TEXT if (has_loop or state == ST_REC) else (GREEN if active else DIM)
             self._text(pcx, pcy, str(i + 1), pie_r * 1.3, pie_r * 1.3, num_col)
             self._text(pcx, ry0 + row_h * 0.87, "1.00×", row_h * 0.8, row_h * 0.22, DIM, bold=False)
-            # полоса цикла (волна появится на этапе 3)
+            # волна цикла: сумма цветом дорожки (сыгранное ярче), слои овердабов полупрозрачно поверх
             wx0 = x0 + part_w + row_h * 0.9
             bw = wx1 - wx0
-            if has_loop or state == ST_REC:
+            if state == ST_REC:
                 band = row_h * 0.26
                 c.create_rectangle(wx0, cy - band, wx1, cy + band, fill=mix(color, BG, 0.7), width=0)
+            if has_loop:
+                self._waves(i, wx0, wx1, cy, row_h * 0.42, color, tr["pos"], tr["reversed"])
+            if has_loop or state == ST_REC:
                 if has_loop and st["quantize"]:
                     # тонкие линии долей, толстые — тактов
                     beats = tr["len"] * beats_per_s
@@ -408,6 +480,125 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             if active:
                 c.create_rectangle(x0 + part_w + 2, ry0 + 2, wx1, ry1 - 2, outline=GREEN, width=2)
         self._master(wx1 + 6, y0, x1 - 4, y1)
+
+    # ---------- волны ----------
+    def _peaks_path(self):
+        if PEAKS_PATH_OVERRIDE:
+            return PEAKS_PATH_OVERRIDE
+        try:
+            return "/dev/shm/audio_looper_%d" % self.processor.engine.proc.pid
+        except Exception:
+            files = glob.glob("/dev/shm/audio_looper_*")
+            return files[0] if len(files) == 1 else None
+
+    def _open_mm(self):
+        path = self._peaks_path()
+        if not path or not os.path.exists(path):
+            return None
+        if path == self.mm_path and self.mm is not None:
+            return self.mm
+        try:
+            if self.mm is not None:
+                self.mm.close()
+            with open(path, "rb") as f:
+                mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            if len(mm) < PK_HDR + 4 * PK_TRACK or struct.unpack_from("<I", mm, 0)[0] != PK_MAGIC:
+                mm.close()
+                return None
+            self.mm, self.mm_path = mm, path
+            self.peaks = [None] * 4
+            return mm
+        except Exception:
+            self.mm = None
+            return None
+
+    def _read_peaks(self, i):
+        """Пики дорожки из общей памяти; перечитываем, только когда плагин их обновил."""
+        mm = self._open_mm()
+        old = self.peaks[i]
+        if mm is None:
+            return old
+        off = PK_HDR + i * PK_TRACK
+        try:
+            seq, live, nl, dub = struct.unpack_from("<4I", mm, off)
+            if old and old["seq"] == seq and old["live"] == live:
+                return old
+            if seq & 1:
+                return old  # плагин как раз пишет
+            fmt = "%db" % PK_COLS
+            nos = struct.unpack_from("<%dI" % PK_LAYERS, mm, off + 16)
+            d = {"seq": seq, "live": live,
+                 "sum": (struct.unpack_from(fmt, mm, off + PK_SUM), struct.unpack_from(fmt, mm, off + PK_SUM + PK_COLS)),
+                 "dub": None, "layers": []}
+            if dub:
+                d["dub"] = (struct.unpack_from(fmt, mm, off + PK_DUB),
+                            struct.unpack_from(fmt, mm, off + PK_DUB + PK_COLS))
+            for j in range(min(nl, PK_LAYERS)):
+                b = off + PK_LAY + j * 2 * PK_COLS
+                d["layers"].append((nos[j], struct.unpack_from(fmt, mm, b), struct.unpack_from(fmt, mm, b + PK_COLS)))
+            if struct.unpack_from("<I", mm, off)[0] != seq:
+                return old
+            peak = max(1, max(d["sum"][1]), -min(d["sum"][0]))
+            d["gain"] = min(4.0, 120.0 / peak)  # тихий луп тоже видно, но не больше 4x
+            self.peaks[i] = d
+            return d
+        except Exception:
+            return old
+
+    def _wave_coords(self, mn, mx, x0, x1, cy, hh, gain):
+        """Верхний край слева направо и нижний справа налево (плоский список координат)."""
+        n = len(mx)
+        step = max(1, int(n / max(16.0, (x1 - x0) / 2.0)))
+        k = hh * gain / 127.0
+        top, bot = [], []
+        for a in range(0, n, step):
+            e = min(n, a + step)
+            hi, lo = max(mx[a:e]), min(mn[a:e])
+            x = x0 + (x1 - x0) * (a + e) / 2.0 / n
+            yt, yb = cy - hi * k, cy - lo * k
+            if yb - yt < 1.0:
+                yt, yb = cy - 0.5, cy + 0.5
+            top += [x, max(cy - hh, yt)]
+            bot += [x, min(cy + hh, yb)]
+        npts = len(top) // 2
+        botrev = []
+        for j in range(npts - 1, -1, -1):
+            botrev += bot[2 * j:2 * j + 2]
+        return top, botrev, npts
+
+    def _waves(self, i, x0, x1, cy, hh, color, pos, reversed_):
+        d = self._read_peaks(i)
+        if not d:
+            return
+        c = self.widget_canvas
+        key = (d["seq"], d["live"], int(x0), int(x1), int(cy), int(hh))
+        g = self.geo.get(i)
+        if not g or g["key"] != key:
+            g = {"key": key,
+                 "sum": self._wave_coords(d["sum"][0], d["sum"][1], x0, x1, cy, hh, d["gain"]),
+                 "layers": [(no, self._wave_coords(mn, mx, x0, x1, cy, hh, d["gain"]))
+                            for (no, mn, mx) in reversed(d["layers"])],
+                 "dub": (self._wave_coords(d["dub"][0], d["dub"][1], x0, x1, cy, hh, d["gain"])
+                         if d["dub"] else None),
+                 "dub_no": (d["layers"][0][0] + 1) if d["layers"] else 1}
+            self.geo[i] = g
+        top, botrev, n = g["sum"]
+        if n < 2:
+            return
+        # сыгранная часть ярче (при reverse — справа от позиции)
+        cp = max(1, min(n - 1, int(round(pos * n))))
+        bright, dim = color, mix(color, BG, 0.5)
+        left, right = (bright, dim) if not reversed_ else (dim, bright)
+        c.create_polygon(top[:2 * cp + 2] + botrev[2 * (n - cp - 1):], fill=left, outline="")
+        c.create_polygon(top[2 * cp:] + botrev[:2 * (n - cp)], fill=right, outline="")
+        # слои овердабов: полупрозрачно поверх (штриховка), старые снизу
+        for no, (lt, lb, ln) in g["layers"]:
+            if ln >= 2:
+                c.create_polygon(lt + lb, fill=LAYER_COLORS[no % len(LAYER_COLORS)], outline="", stipple="gray50")
+        if g["dub"] and g["dub"][2] >= 2:
+            dt_, db_, _ = g["dub"]
+            c.create_polygon(dt_ + db_, fill=LAYER_COLORS[g["dub_no"] % len(LAYER_COLORS)], outline="",
+                             stipple="gray50")
 
     def _mixer(self, st, x0, y0, x1, y1):
         """Mixer по образцу Aeros; значения уровней появятся на этапе 4."""

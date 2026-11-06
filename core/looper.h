@@ -5,6 +5,7 @@
 #pragma once
 #include <cstdint>
 
+#include "peaks.h"
 #include "pool.h"
 
 namespace alp {
@@ -46,15 +47,21 @@ struct TrackView {
 };
 
 // Задание рабочему потоку: dst = src ± layer (подготовка undo/redo).
+// Или (op 3) пересчитать пики дорожки для волн виджета.
 struct WorkMsg {
-  uint8_t op;  // 1 вычесть слой (undo), 2 прибавить (redo)
+  uint8_t op;  // 1 вычесть слой (undo), 2 прибавить (redo), 3 пики
   uint8_t track;
+  uint8_t nl;  // op 3: слоёв в lay[]
   int32_t src, layer, dst;
   uint64_t len;
+  uint32_t gen;
+  int32_t lay[kPeakLayers];
+  uint32_t lno[kPeakLayers];
 };
 struct WorkResp {
   uint8_t op;
   uint8_t track;
+  uint32_t gen;
 };
 
 class Looper {
@@ -73,7 +80,9 @@ class Looper {
   void process(const float* in_l, const float* in_r, float* out_l, float* out_r, uint32_t n, const TimeInfo& t);
   bool take_work(WorkMsg& m);
   void work_done(const WorkResp& r);
-  void cancel_work();  // хост не принял задание: вернуть всё как было
+  void cancel_work(const WorkMsg& m);  // хост не принял задание: вернуть всё как было
+  // Память для пиков волн (общая с виджетом). nullptr — пики не считаются.
+  void set_peaks(PeakShm* p) { peaks_ = p; }
 
   // рабочий поток
   void do_work(const WorkMsg& m, WorkResp& r);
@@ -136,6 +145,9 @@ class Looper {
     float sgain = 1.0f;      // огибающая остановки по транспорту
     float gain = 1.0f;
     bool busy = false;       // рабочий поток считает undo/redo этой дорожки
+    // пики для волн: поколение суммы, нужен пересчёт, пересчёт идёт, аудиопоток дорисовал
+    uint32_t pgen = 0;
+    bool pdirty = false, pinflight = false, plive = false;
   };
 
   // команды
@@ -154,6 +166,11 @@ class Looper {
   void apply_mute(int ti);
   void start_reverse(Track& t, double n);
   void resync(int ti);
+  void mark_peaks(Track& t) {
+    ++t.pgen;
+    t.pdirty = true;
+  }
+  void live_peaks(int ti, uint64_t p);
   void transport_stop();
   void transport_start();
   void wake(int ti);
@@ -196,6 +213,7 @@ class Looper {
   bool job_pending_ = false, job_running_ = false;
   WorkMsg job_{};
   bool reset_all_pending_ = false;
+  PeakShm* peaks_ = nullptr;
 };
 
 }  // namespace alp

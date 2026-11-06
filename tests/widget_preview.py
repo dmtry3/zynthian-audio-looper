@@ -109,6 +109,53 @@ def load_widget():
     return mod
 
 
+def write_fake_peaks(path):
+    """Подставные пики в раскладке PeakShm: дорожка 1 — основа и 3 слоя, 2 — идёт овердаб, 3 — основа."""
+    import math
+    import struct as st
+    cols, nlay = 512, 8
+    track = 16 + 4 * nlay + 2 * cols * (2 + nlay)
+    buf = bytearray(16 + 4 * track)
+    st.pack_into("<4I", buf, 0, 0x31504C41, cols, 4, nlay)
+
+    def wave(f, amp, a=0, b=cols, phase=0.0):
+        mn, mx = [0] * cols, [0] * cols
+        for c in range(a, b):
+            env = amp * (0.55 + 0.45 * math.sin(c / cols * math.pi * f + phase)) * (0.7 + 0.3 * math.sin(c * 0.9))
+            v = int(max(1, min(127, env * 127)))
+            mx[c], mn[c] = v, -v
+        return mn, mx
+
+    def put(off, mn, mx):
+        st.pack_into("%db" % cols, buf, off, *mn)
+        st.pack_into("%db" % cols, buf, off + cols, *mx)
+
+    def track_off(i):
+        return 16 + i * track
+
+    sum_off, dub_off = 16 + 4 * nlay, 16 + 4 * nlay + 2 * cols
+    lay_off = dub_off + 2 * cols
+    # дорожка 1: основа + 3 слоя
+    o = track_off(0)
+    st.pack_into("<4I", buf, o, 2, 0, 3, 0)
+    st.pack_into("<3I", buf, o + 16, 3, 2, 1)
+    put(o + sum_off, *wave(8, 0.75))
+    put(o + lay_off, *wave(16, 0.35, 300, 512))
+    put(o + lay_off + 2 * cols, *wave(6, 0.3, 120, 330, 1.0))
+    put(o + lay_off + 4 * cols, *wave(4, 0.25, 0, 200, 2.0))
+    # дорожка 2: идёт овердаб
+    o = track_off(1)
+    st.pack_into("<4I", buf, o, 2, 5, 0, 1)
+    put(o + sum_off, *wave(12, 0.6))
+    put(o + dub_off, *wave(20, 0.3, 0, 280))
+    # дорожка 3: только основа
+    o = track_off(2)
+    st.pack_into("<4I", buf, o, 2, 0, 0, 0)
+    put(o + sum_off, *wave(5, 0.9))
+    with open(path, "wb") as f:
+        f.write(buf)
+
+
 def texts(wdg):
     c = wdg.widget_canvas
     return [c.itemcget(i, "text") for i in c.find_all() if c.type(i) == "text"]
@@ -117,6 +164,9 @@ def texts(wdg):
 def main():
     show = "--show" in sys.argv
     mod = load_widget()
+    os.makedirs(os.path.join(ROOT, "tests", "out"), exist_ok=True)
+    mod.PEAKS_PATH_OVERRIDE = os.path.join(ROOT, "tests", "out", "peaks.bin")
+    write_fake_peaks(mod.PEAKS_PATH_OVERRIDE)
     root = tkinter.Tk()
     root.geometry("800x480")
     proc = Processor()
@@ -215,6 +265,16 @@ def main():
     check("цвета состояний дорожек", all(col in fills for col in (mod.RED, mod.ORANGE, mod.GRAY)))
     check("reverse фиолетовый", mod.PURPLE in fills)
     no_overlap("800x480, дорожки играют")
+    polys = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "polygon"]
+    stip = [i for i in polys if wdg.widget_canvas.itemcget(i, "stipple")]
+    check("волны: сумма (2 части) на играющих дорожках, овердаб полупрозрачно", len(stip) == 1 and len(polys) >= 6 + 1)
+    m["o_st1"] = 3.0
+    wdg.update()
+    polys = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "polygon"]
+    stip = [i for i in polys if wdg.widget_canvas.itemcget(i, "stipple")]
+    check("слои овердабов дорожки 1 полупрозрачно поверх", len(stip) == 3 + 1)
+    no_overlap("800x480, волны")
+    m["o_st1"] = 2.0
     m["o_track"] = 0.0
     m["o_st1"] = 0.0
     wdg.update()

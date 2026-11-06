@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -38,8 +39,10 @@ struct Sim {
   std::function<double(uint64_t)> beats_at;  // позиция транспорта в долях (по умолчанию от t = 0)
   double beats_now() const { return beats_at ? beats_at(t) : (double)t * bpm / 60.0 / SR; }
 
+  std::unique_ptr<PeakShm> peaks{new PeakShm()};
   explicit Sim(size_t pool_mb = 64, bool quantize = false) {
     lp->init(SR, pool_mb << 20);
+    lp->set_peaks(peaks.get());
     set.quantize = quantize;
     set.dry = 0.0f;
     lp->set_settings(set);
@@ -56,7 +59,7 @@ struct Sim {
       ti.beats = beats_now();
       lp->process(il, ir, ol, orr, BLOCK, ti);
       WorkMsg m;
-      if (lp->take_work(m)) {
+      while (lp->take_work(m)) {
         WorkResp r;
         lp->do_work(m, r);
         lp->work_done(r);
@@ -579,6 +582,49 @@ static void test_play_stop() {
   s.wav("play_stop");
 }
 
+// Пики для волн: после записи — волна суммы, после овердабов — слои (новые первыми),
+// во время овердаба волна слоя растёт вживую; undo убирает слой.
+static void test_peaks() {
+  Sim s;
+  const uint64_t L = 48000;
+  const PeakTrack& pk = s.peaks->t[0];
+  s.in_l = [](uint64_t t) { return t < 24000 ? 0.5f * (float)std::sin(PI2 * 220.0 * (double)t / SR) : 0.0f; };
+  s.cmd(Cmd::Rec);
+  s.run(L);
+  s.cmd(Cmd::Rec);
+  s.run(BLOCK * 8);
+  CHECK(pk.seq % 2 == 0 && pk.seq > 0 && pk.nlayers == 0);
+  // первая половина цикла — синус 0,5 (64 из 127), вторая — тишина
+  int mx = 0, mn = 0;
+  for (int c = 50; c < 200; ++c) {
+    mx = std::max(mx, (int)pk.sum.mx[c]);
+    mn = std::min(mn, (int)pk.sum.mn[c]);
+  }
+  CHECK(mx >= 60 && mx <= 66 && mn <= -60);
+  CHECK(pk.sum.mx[400] == 0 && pk.sum.mn[400] == 0);
+  // овердаб во второй половине: живая волна слоя растёт
+  s.in_l = sine(330.0, 0.25f);
+  s.run(L - (s.t % L) + L / 2);  // до середины цикла
+  s.cmd(Cmd::Rec);
+  uint32_t live0 = pk.live;
+  s.run(L / 4);
+  CHECK(pk.dub_active == 1 && pk.live > live0);
+  CHECK(pk.dub.mx[320] >= 28 && pk.dub.mx[100] == 0);
+  s.run(L / 4);
+  s.cmd(Cmd::Rec);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(BLOCK * 8);
+  CHECK(pk.dub_active == 0 && pk.nlayers == 1 && pk.layer_no[0] == 1);
+  CHECK(pk.layer[0].mx[400] >= 28 && pk.layer[0].mx[100] == 0);
+  CHECK(pk.sum.mx[400] >= 28);
+  s.cmd(Cmd::Undo);
+  s.run(BLOCK * 8);
+  CHECK(pk.nlayers == 0 && pk.sum.mx[400] == 0);
+  s.cmd(Cmd::ResetTrack);
+  s.run(BLOCK * 8);
+  CHECK(pk.sum.mx[100] == 0);
+}
+
 int main() {
   test_record_play();
   test_overdubs_undo();
@@ -588,6 +634,7 @@ int main() {
   test_transport_restart_resync();
   test_transport_stop_start();
   test_play_stop();
+  test_peaks();
   test_quantize();
   test_rop();
   test_reset();

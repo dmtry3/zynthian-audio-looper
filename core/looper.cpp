@@ -204,6 +204,7 @@ void Looper::close_loop(int ti, uint64_t L) {
   t.xf_pos = 0;
   t.xpos = t.pos;
   t.xf_len = xf_;
+  mark_peaks(t);
 }
 
 void Looper::start_dub(int ti) {
@@ -219,6 +220,12 @@ void Looper::start_dub(int ti) {
   t.dub_end = -1;
   t.undo_after_dub = t.reset_after_dub = false;
   t.st = TState::Dub;
+  if (peaks_) {  // волна нового слоя растёт вживую
+    PeakTrack& pk = peaks_->t[ti];
+    clear_wave(pk.dub);
+    __atomic_store_n(&pk.dub_active, 1u, __ATOMIC_RELEASE);
+    t.plive = true;
+  }
 }
 
 void Looper::end_dub(int ti) {
@@ -232,6 +239,8 @@ void Looper::finish_dub(int ti) {
   t.layer = -1;
   t.dub_end = -1;
   t.st = TState::Play;
+  mark_peaks(t);
+  if (peaks_) __atomic_store_n(&peaks_->t[ti].dub_active, 0u, __ATOMIC_RELEASE);
   if (t.undo_after_dub) {
     t.undo_after_dub = false;
     undo(ti);
@@ -307,6 +316,8 @@ void Looper::reset_all_now() {
   ps_pending_ = 0;
   for (int ti = 0; ti < kTracks; ++ti) {
     Track& t = tr_[ti];
+    mark_peaks(t);
+    if (peaks_) __atomic_store_n(&peaks_->t[ti].dub_active, 0u, __ATOMIC_RELEASE);
     if (t.rec >= 0) pool_.free_buf(t.rec);
     if (t.layer >= 0) pool_.free_buf(t.layer);
     t.rec = t.layer = -1;
@@ -413,6 +424,7 @@ bool Looper::reserve(uint32_t need, int prefer) {
 
 void Looper::swap_to(int ti, int32_t new_sum, bool free_old) {
   Track& t = tr_[ti];
+  mark_peaks(t);
   int32_t old = t.sum;
   if (t.xf_from >= 0 && t.xf_owned) pool_.free_buf(t.xf_from);
   t.xf_from = old;
@@ -463,21 +475,58 @@ bool Looper::post_job(int ti, uint8_t op, int32_t layer) {
     else t.redo[t.redo_n++] = Entry{U_DELTA, layer};
     return false;
   }
-  job_ = WorkMsg{op, (uint8_t)ti, t.sum, layer, dst, L};
+  job_ = WorkMsg{};
+  job_.op = op;
+  job_.track = (uint8_t)ti;
+  job_.src = t.sum;
+  job_.layer = layer;
+  job_.dst = dst;
+  job_.len = L;
   job_pending_ = true;
   t.busy = true;
   return true;
 }
 
 bool Looper::take_work(WorkMsg& m) {
-  if (!job_pending_) return false;
-  m = job_;
-  job_pending_ = false;
-  job_running_ = true;
-  return true;
+  if (job_pending_) {
+    m = job_;
+    job_pending_ = false;
+    job_running_ = true;
+    return true;
+  }
+  if (!peaks_) return false;
+  // пики: сумма и последние слои овердабов (их номера с начала дорожки — для цвета)
+  for (int k = 0; k < kTracks; ++k) {
+    Track& t = tr_[k];
+    if (!t.pdirty || t.pinflight || t.busy) continue;
+    m = WorkMsg{};
+    m.op = 3;
+    m.track = (uint8_t)k;
+    m.src = t.sum;
+    m.layer = m.dst = -1;
+    m.len = t.sum >= 0 ? t.len : 0;
+    m.gen = t.pgen;
+    for (uint32_t j = t.undo_n; j > 0 && m.nl < kPeakLayers; --j) {
+      const Entry& e = t.undo[(t.undo_lo + j - 1) % kMaxUndo];
+      if (e.type != U_DELTA) break;  // ниже — основа или предыдущая запись
+      m.lay[m.nl] = e.buf;
+      m.lno[m.nl] = j - 1;
+      ++m.nl;
+    }
+    t.pdirty = false;
+    t.pinflight = true;
+    return true;
+  }
+  return false;
 }
 
-void Looper::cancel_work() {
+void Looper::cancel_work(const WorkMsg& m) {
+  if (m.op == 3) {
+    Track& t = tr_[m.track];
+    t.pinflight = false;
+    t.pdirty = true;
+    return;
+  }
   if (!job_running_) return;
   job_running_ = false;
   Track& t = tr_[job_.track];
@@ -492,6 +541,22 @@ void Looper::cancel_work() {
 }
 
 void Looper::do_work(const WorkMsg& m, WorkResp& r) {
+  r.op = m.op;
+  r.track = m.track;
+  r.gen = m.gen;
+  if (m.op == 3) {
+    if (!peaks_) return;
+    PeakTrack& pk = peaks_->t[m.track];
+    seq_begin(pk);
+    compute_wave(pool_, m.src, m.len, pk.sum);
+    for (uint32_t i = 0; i < m.nl; ++i) {
+      compute_wave(pool_, m.lay[i], m.len, pk.layer[i]);
+      pk.layer_no[i] = m.lno[i];
+    }
+    pk.nlayers = m.nl;
+    seq_end(pk);
+    return;
+  }
   const Buf& src = pool_.buf(m.src);
   const Buf& lay = pool_.buf(m.layer);
   const Buf& dst = pool_.buf(m.dst);
@@ -514,14 +579,19 @@ void Looper::do_work(const WorkMsg& m, WorkResp& r) {
       }
     }
   }
-  r.op = m.op;
-  r.track = m.track;
 }
 
 void Looper::work_done(const WorkResp& r) {
+  if (r.op == 3) {  // пики готовы; если дорожка успела измениться — посчитать ещё раз
+    Track& t = tr_[r.track];
+    t.pinflight = false;
+    if (r.gen != t.pgen) t.pdirty = true;
+    return;
+  }
   job_running_ = false;
   Track& t = tr_[r.track];
   t.busy = false;
+  mark_peaks(t);
   // новая сумма готова: кроссфейд со старой, старая уходит в пул
   if (t.xf_from >= 0 && t.xf_owned) pool_.free_buf(t.xf_from);
   t.xf_from = t.sum;
@@ -621,8 +691,28 @@ void Looper::dub_write(int ti, uint64_t p, float l, float r) {
     c->l[p & kChunkMask] += l * env;
     c->r[p & kChunkMask] += r * env;
     write_add(t.sum, p, l * env, r * env);
+    if (peaks_) live_peaks(ti, p);
   }
   if (t.dub_end >= 0 && ++t.dub_end >= (int64_t)xf_) finish_dub(ti);
+}
+
+// Аудиопоток дорисовывает колонку под позицией: волна суммы и текущего слоя растёт вживую.
+void Looper::live_peaks(int ti, uint64_t p) {
+  Track& t = tr_[ti];
+  if (!t.len) return;
+  PeakTrack& pk = peaks_->t[ti];
+  const uint32_t c = (uint32_t)(p * kPeakCols / t.len);
+  float l, r;
+  pool_.read(pool_.buf(t.sum), p, l, r);
+  int8_t lo = peak_q(l < r ? l : r), hi = peak_q(l > r ? l : r);
+  if (lo < pk.sum.mn[c]) pk.sum.mn[c] = lo;
+  if (hi > pk.sum.mx[c]) pk.sum.mx[c] = hi;
+  pool_.read(pool_.buf(t.layer), p, l, r);
+  lo = peak_q(l < r ? l : r);
+  hi = peak_q(l > r ? l : r);
+  if (lo < pk.dub.mn[c]) pk.dub.mn[c] = lo;
+  if (hi > pk.dub.mx[c]) pk.dub.mx[c] = hi;
+  t.plive = true;
 }
 
 void Looper::on_grid(bool beat, bool bar) {
@@ -868,6 +958,12 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
     if (out_l) out_l[i] = ol + dry * il;
     if (out_r) out_r[i] = orr + dry * ir;
   }
+  if (peaks_)  // виджет перечитает дорисованные колонки
+    for (int k = 0; k < kTracks; ++k)
+      if (tr_[k].plive) {
+        __atomic_add_fetch(&peaks_->t[k].live, 1u, __ATOMIC_RELEASE);
+        tr_[k].plive = false;
+      }
 }
 
 // ---------------------------------------------------------------- состояние
