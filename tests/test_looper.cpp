@@ -44,8 +44,8 @@ struct Sim {
     lp->init(SR, pool_mb << 20);
     lp->set_peaks(peaks.get());
     set.quantize = quantize;
-    set.dry = 0.0f;
     lp->set_settings(set);
+    lp->set_dry_db(-100.0f);  // в тестах слушаем только лупы
   }
   void apply() { lp->set_settings(set); }
   void run(uint64_t frames) {
@@ -830,6 +830,133 @@ static void test_part_at_loop_end() {
   }
 }
 
+// Микшер (этап 4): режимы каналов, уровень, сглаживание, ограничитель, сброс, перенос Lock.
+static void test_mixer() {
+  const uint64_t L = 48000;
+  auto rec_left_only = [&](Sim& s) {  // луп: синус только в L, R — тишина
+    s.in_l = sine(220.0, 0.4f);
+    s.in_r = [](uint64_t) { return 0.0f; };
+    s.cmd(Cmd::Rec);
+    s.run(L);
+    s.cmd(Cmd::Rec);
+    s.run(BLOCK * 8);
+    s.in_l = [](uint64_t) { return 0.0f; };
+    s.run(L);
+  };
+  auto peak_lr = [&](Sim& s, float& pl, float& pr) {
+    pl = pr = 0;
+    for (uint64_t i = s.t - L / 2; i < s.t; ++i) {
+      pl = std::fmax(pl, std::fabs(s.out_l[i]));
+      pr = std::fmax(pr, std::fabs(s.out_r[i]));
+    }
+  };
+  {  // «Раздельно»: в центре L и R не смешиваются, вправо — L переезжает направо
+    Sim s;
+    rec_left_only(s);
+    const int k = s.lp->active_index();
+    Mix m;
+    m.mode = 1;
+    s.lp->set_mix(k, m);
+    s.run(L);
+    float pl, pr;
+    peak_lr(s, pl, pr);
+    CHECK(pl > 0.39f && pl < 0.41f && pr < 1e-6f);
+    m.pan = 1.0f;
+    s.lp->set_mix(k, m);
+    s.run(L);
+    peak_lr(s, pl, pr);
+    CHECK(pl < 1e-4f && pr > 0.39f && pr < 0.41f);
+    m.pan = 0.5f;  // посередине: поровну по мощности
+    s.lp->set_mix(k, m);
+    s.run(L);
+    peak_lr(s, pl, pr);
+    CHECK(std::fabs(pl - pr) < 0.01f && std::fabs(pl * pl + pr * pr - 0.16f) < 0.01f);
+  }
+  {  // «Стерео»: центр как записано, влево — правый канал уходит, левый +3 дБ
+    Sim s;
+    rec_left_only(s);
+    const int k = s.lp->active_index();
+    Mix m;
+    m.pan = -1.0f;
+    s.lp->set_mix(k, m);
+    s.run(L);
+    float pl, pr;
+    peak_lr(s, pl, pr);
+    CHECK(std::fabs(pl - 0.4f * 1.41421f) < 0.01f && pr < 1e-6f);
+    // уровень −6 дБ, смена без щелчка
+    m.pan = 0.0f;
+    m.level_db = -6.0206f;
+    const uint64_t t0 = s.t;
+    s.lp->set_mix(k, m);
+    s.run(L);
+    peak_lr(s, pl, pr);
+    CHECK(std::fabs(pl - 0.2f) < 0.005f);
+    CHECK(s.max_step(t0 - 10, s.t) < 0.03f);
+    // −∞
+    m.level_db = -60.0f;
+    s.lp->set_mix(k, m);
+    s.run(L);
+    peak_lr(s, pl, pr);
+    CHECK(pl < 1e-6f);
+  }
+  {  // ограничитель мастера: две громкие дорожки не клиппят
+    Sim s;
+    s.in_l = sine(220.0, 0.9f);
+    s.in_r = sine(220.0, 0.9f);
+    s.cmd(Cmd::Rec);
+    s.run(L);
+    s.cmd(Cmd::Rec);
+    s.cmd(Cmd::TrackNext);
+    s.cmd(Cmd::Rec);
+    s.run(L);
+    s.cmd(Cmd::Rec);
+    s.in_l = s.in_r = [](uint64_t) { return 0.0f; };
+    s.run(L * 2);
+    float pl, pr;
+    peak_lr(s, pl, pr);
+    CHECK(pl <= 1.0f && pr <= 1.0f && pl > 0.8f);
+    CHECK(s.lp->master_peak(0) > 0.8f && s.lp->master_peak(0) <= 1.0f && s.lp->peak(0) > 0.5f);
+    s.lp->set_limiter(false);
+    s.run(L);
+    peak_lr(s, pl, pr);
+    CHECK(pl > 1.5f);  // без ограничителя сумма двух 0,9
+    // сброс удержанием Reset: микшер в значения по умолчанию
+    Mix m;
+    m.level_db = -12.0f;
+    m.mode = 1;
+    s.lp->set_mix(3, m);
+    s.lp->set_master_db(-6.0f);
+    s.lp->set_dry_db(-20.0f);
+    const uint32_t ep = s.lp->mix_epoch();
+    s.cmd(Cmd::ResetAll);
+    CHECK(s.lp->mix(3).level_db == 0.0f && s.lp->mix(3).mode == 0 && s.lp->master_db() == 0.0f &&
+          s.lp->dry_db() == 0.0f && s.lp->limiter() && s.lp->mix_epoch() != ep);
+  }
+  {  // Lock-копия переносит уровень, панораму и режим
+    const uint64_t BAR = 96000;
+    Sim s(64, true);
+    s.ti.rolling = true;
+    s.set.length[0] = 1;
+    s.apply();
+    s.in_l = sine(200.0, 0.3f);
+    s.run(BLOCK);
+    s.cmd(Cmd::Rec);
+    s.run(2 * BAR + BLOCK * 8);
+    s.in_l = [](uint64_t) { return 0.0f; };
+    Mix m;
+    m.level_db = -9.0f;
+    m.pan = 0.3f;
+    m.mode = 1;
+    s.lp->set_mix(0, m);
+    s.cmd(Cmd::PartNext);
+    s.run(BAR + BLOCK * 4);
+    CHECK(s.lp->part() == 1);
+    const Mix& c = s.lp->mix(4);
+    CHECK(c.level_db == -9.0f && c.pan == 0.3f && c.mode == 1);
+    CHECK(s.max_step(2 * BAR, s.t) < 0.03f);
+  }
+}
+
 int main() {
   test_record_play();
   test_overdubs_undo();
@@ -843,6 +970,7 @@ int main() {
   test_parts_lock();
   test_parts_edges();
   test_part_at_loop_end();
+  test_mixer();
   test_quantize();
   test_rop();
   test_reset();

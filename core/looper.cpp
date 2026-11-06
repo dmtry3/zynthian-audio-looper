@@ -7,7 +7,21 @@ namespace alp {
 namespace {
 constexpr uint32_t kReserve = 4;     // кусков про запас, чтобы запись не упёрлась в ноль
 constexpr uint64_t kNoSeam = ~0ull;
-constexpr double kLatePressS = 0.2;  // опоздание нажатия после черты, которое ещё считается «на черте»
+constexpr double kLatePressS = 0.2;
+constexpr double kMixSmoothS = 0.02;   // сглаживание уровня и панорамы
+constexpr float kLimThr = 0.891f;      // ограничитель мастера: −1 дБ
+constexpr float kLimRelS = 0.15f;      // отпускание ограничителя
+constexpr float kPeakFallDbS = 20.0f;  // спад пиковых индикаторов, дБ/с
+
+inline float db_gain(float db) { return db <= kMinDb ? 0.0f : std::pow(10.0f, db / 20.0f); }
+
+// Мягкое ограничение у 0 дБ: подстраховка после ограничителя.
+inline float soft_clip(float y) {
+  const float k = 0.95f, a = std::fabs(y);
+  if (a <= k) return y;
+  const float v = k + (1.0f - k) * std::tanh((a - k) / (1.0f - k));
+  return y < 0 ? -v : v;
+}  // опоздание нажатия после черты, которое ещё считается «на черте»
 
 inline uint64_t wrap_index(int64_t i, uint64_t L) {
   int64_t m = i % (int64_t)L;
@@ -21,6 +35,7 @@ bool Looper::init(double sample_rate, size_t pool_bytes) {
   if (xf_ < 16) xf_ = 16;
   for (auto& t : tr_) t.seam_t = kNoSeam;
   default_locks();
+  for (int k = 0; k < kTracks; ++k) mix_matrix(mix_[k], mcur_[k]);
   // Если столько памяти не дали, пробуем меньше: плагин должен загрузиться.
   for (size_t b = pool_bytes; b >= ((size_t)32 << 20); b /= 2)
     if (pool_.init(b, 4096)) return true;
@@ -389,6 +404,38 @@ void Looper::reset_all_now() {
     t.seam_t = kNoSeam;
   }
   default_locks();
+  reset_mixer();
+}
+
+void Looper::reset_mixer() {
+  for (auto& m : mix_) m = Mix();
+  master_db_ = dry_db_ = 0.0f;
+  lim_on_ = true;
+  ++mix_epoch_;
+}
+
+// Матрица дорожки: выход L = in L * LL + in R * RL, выход R = in L * LR + in R * RR.
+void Looper::mix_matrix(const Mix& m, float out[4]) {
+  const float g = db_gain(m.level_db);
+  const float p = m.pan < -1.0f ? -1.0f : (m.pan > 1.0f ? 1.0f : m.pan);
+  const float hp = 1.5707963f;
+  if (m.mode == 0) {  // стерео: баланс с постоянной мощностью, в центре как записано
+    const float th = (p + 1.0f) * 0.7853982f;
+    out[0] = g * std::cos(th) * 1.4142136f;
+    out[1] = 0.0f;
+    out[2] = 0.0f;
+    out[3] = g * std::sin(th) * 1.4142136f;
+  } else if (p >= 0.0f) {  // раздельно, вправо: L плавно переезжает направо
+    out[0] = g * std::cos(p * hp);
+    out[1] = 0.0f;
+    out[2] = g * std::sin(p * hp);
+    out[3] = g;
+  } else {  // раздельно, влево: R переезжает налево
+    out[0] = g;
+    out[1] = g * std::sin(-p * hp);
+    out[2] = 0.0f;
+    out[3] = g * std::cos(-p * hp);
+  }
 }
 
 void Looper::start_reverse(Track& t, double n) {
@@ -764,7 +811,7 @@ void Looper::on_grid(bool beat, bool bar) {
   if (pend_part_ >= 0 && ((set_.part_q == 1 && beat) || (set_.part_q == 2 && bar))) switch_part(pend_part_);
 }
 
-void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
+void Looper::track_sample(int ti, uint32_t i, float il, float ir, float& ol, float& orr) {
   Track& t = tr_[ti];
   // Дорожка ушедшего парта: затихает по fade out, потом не обрабатывается.
   // Lock-копия ждёт конца овердаба — до тех пор старая дорожка звучит.
@@ -827,8 +874,15 @@ void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
     t.sgain = t.sgain < starget ? std::fmin(starget, t.sgain + step) : std::fmax(starget, t.sgain - step);
   }
   const float g = t.gain * t.sgain;
-  ol += l * g;
-  orr += r * g;
+  const float* c = mcur_[ti];
+  const float* d = mstep_[ti];
+  const float fi = (float)i;
+  const float yl = (l * (c[0] + d[0] * fi) + r * (c[1] + d[1] * fi)) * g;
+  const float yr = (l * (c[2] + d[2] * fi) + r * (c[3] + d[3] * fi)) * g;
+  ol += yl;
+  orr += yr;
+  const float a = std::fmax(std::fabs(yl), std::fabs(yr));
+  if (a > bmax_[ti]) bmax_[ti] = a;
 
   // запись: хвост на стыке и овердаб
   if (playing) {
@@ -1030,6 +1084,9 @@ void Looper::clone_into(int from, int to) {
   n.ustop = o.ustop;
   n.sgain = o.sgain;
   n.locked = true;
+  mix_[to] = mix_[from];
+  for (int j = 0; j < 4; ++j) mcur_[to][j] = mcur_[from][j];
+  ++mix_epoch_;
   o.sgain = 0.0f;  // звук продолжает копия
   o.rev_wait = -1;
   o.mute_pending = false;
@@ -1122,7 +1179,24 @@ void Looper::resync(int ti) {
 void Looper::process(const float* in_l, const float* in_r, float* out_l, float* out_r, uint32_t n,
                      const TimeInfo& ti) {
   set_time(ti);
-  const float dry = set_.dry;
+  // микшер: к целевым значениям плавно (~20 мс), внутри блока — линейно
+  const float ks = n ? 1.0f - (float)std::exp(-(double)n / (kMixSmoothS * sr_)) : 0.0f;
+  for (int k = 0; k < kTracks; ++k) {
+    float tgt[4];
+    mix_matrix(mix_[k], tgt);
+    for (int j = 0; j < 4; ++j) {
+      const float end = mcur_[k][j] + (tgt[j] - mcur_[k][j]) * ks;
+      mstep_[k][j] = n ? (end - mcur_[k][j]) / (float)n : 0.0f;
+    }
+    bmax_[k] = 0.0f;
+  }
+  const float mg0 = master_g_, dg0 = dry_g_;
+  master_g_ += (db_gain(master_db_) - master_g_) * ks;
+  dry_g_ += (db_gain(dry_db_) - dry_g_) * ks;
+  const float mgs = n ? (master_g_ - mg0) / (float)n : 0.0f;
+  const float dgs = n ? (dry_g_ - dg0) / (float)n : 0.0f;
+  const float lim_rel = (float)std::exp(-1.0 / (kLimRelS * sr_));
+  float mbl = 0.0f, mbr = 0.0f;
   // «конец цикла» для смены парта — по самой длинной играющей дорожке текущего парта
   master_ = -1;
   uint64_t longest = 0;
@@ -1161,11 +1235,37 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
     const float ir = in_r ? in_r[i] : 0.0f;
     float ol = 0.0f, orr = 0.0f;
     if (pool_.ok())
-      for (int k = 0; k < kTracks; ++k) track_sample(k, il, ir, ol, orr);
-    if (out_l) out_l[i] = ol + dry * il;
-    if (out_r) out_r[i] = orr + dry * ir;
+      for (int k = 0; k < kTracks; ++k) track_sample(k, i, il, ir, ol, orr);
+    // мастер лупов: уровень, мягкий ограничитель, пики; сухой сигнал мимо ограничителя
+    const float mg = mg0 + mgs * (float)i;
+    ol *= mg;
+    orr *= mg;
+    if (lim_on_) {
+      const float x = std::fmax(std::fabs(ol), std::fabs(orr));
+      lim_env_ = x > lim_env_ ? x : x + (lim_env_ - x) * lim_rel;
+      if (lim_env_ > kLimThr) {
+        const float gr = kLimThr / lim_env_;
+        ol *= gr;
+        orr *= gr;
+      }
+      ol = soft_clip(ol);
+      orr = soft_clip(orr);
+    }
+    if (std::fabs(ol) > mbl) mbl = std::fabs(ol);
+    if (std::fabs(orr) > mbr) mbr = std::fabs(orr);
+    const float dg = dg0 + dgs * (float)i;
+    if (out_l) out_l[i] = ol + dg * il;
+    if (out_r) out_r[i] = orr + dg * ir;
     beats_ += bpf_;
   }
+  // конец блока: коэффициенты микшера, пики с плавным спадом
+  const float fall = (float)std::pow(10.0, -kPeakFallDbS * (double)n / sr_ / 20.0);
+  for (int k = 0; k < kTracks; ++k) {
+    for (int j = 0; j < 4; ++j) mcur_[k][j] += mstep_[k][j] * (float)n;
+    tpeak_[k] = std::fmax(tpeak_[k] * fall, bmax_[k]);
+  }
+  mpeak_[0] = std::fmax(mpeak_[0] * fall, mbl);
+  mpeak_[1] = std::fmax(mpeak_[1] * fall, mbr);
   if (peaks_)  // виджет перечитает дорисованные колонки
     for (int k = idx(0); k < idx(0) + kSlots; ++k)
       if (tr_[k].plive) {

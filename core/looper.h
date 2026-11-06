@@ -29,7 +29,16 @@ struct Settings {
   float reverse_ms = 50.0f;    // время разворота
   int mute_q = 2;             // 0 сразу, 1 доля, 2 такт, 3 конец цикла
   int part_q = 3;             // смена парта: 0 сразу, 1 доля, 2 такт, 3 конец цикла (самого длинного лупа)
-  float dry = 1.0f;           // сухой сигнал на выходе
+};
+
+// Микшер дорожки. Режим «Стерео»: панорама как баланс с постоянной мощностью.
+// «Раздельно» (L и R — разные инструменты): в центре L слева, R справа, ничего не смешивается;
+// к краю противоположный канал плавно уходит в сторону панорамы.
+constexpr float kMinDb = -60.0f;  // ниже — тишина (−∞)
+struct Mix {
+  float level_db = 0.0f;  // −60 (−∞) .. +6
+  float pan = 0.0f;       // −1 .. 1
+  int mode = 0;           // 0 стерео, 1 раздельно
 };
 
 // Время блока: доли считаются от начала (абсолютные), растут на beats_per_frame за кадр.
@@ -94,6 +103,7 @@ class Looper {
 
   // RT: состояние (view и active — по месту дорожки в текущем парте)
   int active() const { return active_; }
+  int active_index() const { return idx(active_); }  // номер активной дорожки среди всех 16
   int part() const { return cur_part_; }
   int pending_part() const { return pend_part_; }
   bool rec_after_switch() const { return rec_after_switch_; }
@@ -102,6 +112,19 @@ class Looper {
   int playstop_pending() const { return ps_pending_; }
   double grid_beats() const { return beats_; }  // доли по сетке лупера (при стоящем транспорте — от первой записи)
   TrackView view(int i) const;
+  // микшер (RT): k — дорожка 0..15; mix_epoch растёт, когда ядро меняет микшер само
+  // (сброс удержанием Reset, Lock-копия) — обёртка сообщает новые значения хосту
+  void set_mix(int k, const Mix& m) { mix_[k] = m; }
+  const Mix& mix(int k) const { return mix_[k]; }
+  void set_master_db(float db) { master_db_ = db; }
+  float master_db() const { return master_db_; }
+  void set_dry_db(float db) { dry_db_ = db; }
+  float dry_db() const { return dry_db_; }
+  void set_limiter(bool on) { lim_on_ = on; }
+  bool limiter() const { return lim_on_; }
+  uint32_t mix_epoch() const { return mix_epoch_; }
+  float peak(int slot) const { return tpeak_[idx(slot)]; }  // пик дорожки текущего парта, 0..1+
+  float master_peak(int ch) const { return mpeak_[ch & 1]; }
   float pool_fill() const;
   uint32_t free_chunks() const { return pool_.free_chunks(); }
   uint32_t total_chunks() const { return pool_.total_chunks(); }
@@ -208,7 +231,9 @@ class Looper {
   bool post_job(int ti, uint8_t op, int32_t layer);
 
   // звук
-  void track_sample(int ti, float il, float ir, float& ol, float& orr);
+  void track_sample(int ti, uint32_t i, float il, float ir, float& ol, float& orr);
+  void reset_mixer();
+  static void mix_matrix(const Mix& m, float out[4]);
   void read_sum(const Track& t, int32_t b, double pos, float& l, float& r) const;
   void write_add(int32_t b, uint64_t p, float l, float r);
   void seam_write(Track& t, float l, float r);
@@ -242,6 +267,18 @@ class Looper {
   WorkMsg job_{};
   bool reset_all_pending_ = false;
   PeakShm* peaks_ = nullptr;
+  // микшер: целевые значения, коэффициенты LL RL LR RR в начале блока и шаг за кадр
+  Mix mix_[kTracks];
+  float mcur_[kTracks][4] = {};
+  float mstep_[kTracks][4] = {};
+  float bmax_[kTracks] = {};
+  float tpeak_[kTracks] = {};
+  float master_db_ = 0.0f, dry_db_ = 0.0f;
+  float master_g_ = 1.0f, dry_g_ = 1.0f;
+  bool lim_on_ = true;
+  float lim_env_ = 0.0f;
+  float mpeak_[2] = {};
+  uint32_t mix_epoch_ = 0;
 };
 
 }  // namespace alp

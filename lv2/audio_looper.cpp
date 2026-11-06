@@ -52,6 +52,7 @@ enum Port : uint32_t {
   O_POS1, O_POS2, O_POS3, O_POS4,
   O_LEN1, O_LEN2, O_LEN3, O_LEN4,
   O_FLAGS, O_POOL, O_PARTS,
+  O_PK1, O_PK2, O_PK3, O_PK4, O_MPK_L, O_MPK_R,
   P_COUNT
 };
 
@@ -86,20 +87,46 @@ const ButtonDef kDefs[kButtons] = {
     {A_W_MIXER, A_NONE, 0},
 };
 
-// Настройки: LV2-параметры. Порядок и значения как в audio_looper.ttl.
+// Настройки и микшер: LV2-параметры (patch:Set), сохраняются в снапшотах. Порядок как в audio_looper.ttl.
 enum Param {
   PR_REC_ORDER, PR_MODE, PR_LEN1, PR_LEN2, PR_LEN3, PR_LEN4, PR_FADE_OUT, PR_FADE_IN, PR_REV, PR_MUTE_Q, PR_PART_Q,
+  PR_LEV0,                      // lev1..lev16: уровень дорожки, дБ
+  PR_PAN0 = PR_LEV0 + kTracks,  // pan1..pan16: −100..100
+  PR_CHM0 = PR_PAN0 + kTracks,  // chm1..chm16: 0 стерео, 1 раздельно
+  PR_DRY = PR_CHM0 + kTracks,
+  PR_MASTER,
+  PR_LIMIT,
   PR_COUNT
 };
 struct ParamDef {
-  const char* sym;
-  int def, lo, hi;
+  char sym[16];
+  float def, lo, hi;
+  bool is_float;
 };
-const ParamDef kParams[PR_COUNT] = {
-    {"rec_order", 0, 0, 1}, {"mode", 1, 0, 1},       {"len1", 0, 0, 16},      {"len2", 0, 0, 16},
-    {"len3", 0, 0, 16},     {"len4", 0, 0, 16},      {"fade_out", 200, 10, 4000}, {"fade_in", 200, 10, 4000},
-    {"rev_time", 50, 5, 1000}, {"mute_q", 2, 0, 3}, {"part_q", 3, 0, 3},
-};
+ParamDef kParams[PR_COUNT];
+
+void init_params() {
+  struct S { const char* sym; int def, lo, hi; };
+  const S settings[PR_LEV0] = {
+      {"rec_order", 0, 0, 1}, {"mode", 1, 0, 1}, {"len1", 0, 0, 16}, {"len2", 0, 0, 16}, {"len3", 0, 0, 16},
+      {"len4", 0, 0, 16}, {"fade_out", 200, 10, 4000}, {"fade_in", 200, 10, 4000}, {"rev_time", 50, 5, 1000},
+      {"mute_q", 2, 0, 3}, {"part_q", 3, 0, 3}};
+  for (int i = 0; i < PR_LEV0; ++i) {
+    kParams[i] = ParamDef{{}, (float)settings[i].def, (float)settings[i].lo, (float)settings[i].hi, false};
+    std::snprintf(kParams[i].sym, sizeof kParams[i].sym, "%s", settings[i].sym);
+  }
+  for (int t = 0; t < kTracks; ++t) {
+    kParams[PR_LEV0 + t] = ParamDef{{}, 0.0f, kMinDb, 6.0f, true};
+    std::snprintf(kParams[PR_LEV0 + t].sym, 16, "lev%d", t + 1);
+    kParams[PR_PAN0 + t] = ParamDef{{}, 0.0f, -100.0f, 100.0f, false};
+    std::snprintf(kParams[PR_PAN0 + t].sym, 16, "pan%d", t + 1);
+    kParams[PR_CHM0 + t] = ParamDef{{}, 0.0f, 0.0f, 1.0f, false};
+    std::snprintf(kParams[PR_CHM0 + t].sym, 16, "chm%d", t + 1);
+  }
+  kParams[PR_DRY] = ParamDef{"dry", 0.0f, kMinDb, 6.0f, true};
+  kParams[PR_MASTER] = ParamDef{"master", 0.0f, kMinDb, 6.0f, true};
+  kParams[PR_LIMIT] = ParamDef{"limiter", 1.0f, 0.0f, 1.0f, false};
+}
 constexpr uint32_t kReportPerRun = 4;  // ответов на patch:Get за один run()
 
 enum TempoSrc { SRC_NONE = 0, SRC_POSITION = 1, SRC_CLOCK = 2 };
@@ -128,8 +155,16 @@ struct Plugin {
   int widget = 0;
   int last_action = A_NONE;
   uint32_t action_count = 0;
-  int32_t vals[PR_COUNT];
+  float vals[PR_COUNT];
+  bool dirty[PR_COUNT] = {};  // ядро изменило значение само: сообщить хосту
   int report_next = -1;  // следующий параметр для ответа на patch:Get, -1 = нечего
+  // ручки страницы 5 (Level, Pan, Master) с захватом (catch): ведут значение,
+  // только когда прошли через его текущую величину
+  struct Catch {
+    bool init = false, caught = false;
+    float last = 0.0f, applied = 0.0f;
+    int target = -1;
+  } c_level, c_pan, c_master;
 
   float in(uint32_t p) const { return ports[p] ? *static_cast<const float*>(ports[p]) : 0.0f; }
   void out(uint32_t p, float v) {
@@ -145,10 +180,49 @@ struct Plugin {
     s.fade_out_ms = (float)vals[PR_FADE_OUT];
     s.fade_in_ms = (float)vals[PR_FADE_IN];
     s.reverse_ms = (float)vals[PR_REV];
-    s.mute_q = vals[PR_MUTE_Q];
-    s.part_q = vals[PR_PART_Q];
-    s.dry = 1.0f;
+    s.mute_q = (int)vals[PR_MUTE_Q];
+    s.part_q = (int)vals[PR_PART_Q];
     looper->set_settings(s);
+  }
+
+  // параметр микшера -> ядро
+  void apply_mix_param(int i) {
+    if (i >= PR_LEV0 && i < PR_DRY) {
+      const int t = (i - PR_LEV0) % kTracks;
+      Mix m;
+      m.level_db = vals[PR_LEV0 + t];
+      m.pan = vals[PR_PAN0 + t] / 100.0f;
+      m.mode = (int)vals[PR_CHM0 + t];
+      looper->set_mix(t, m);
+    } else if (i == PR_DRY) {
+      looper->set_dry_db(vals[PR_DRY]);
+    } else if (i == PR_MASTER) {
+      looper->set_master_db(vals[PR_MASTER]);
+    } else if (i == PR_LIMIT) {
+      looper->set_limiter(vals[PR_LIMIT] >= 0.5f);
+    }
+  }
+  void apply_all() {
+    apply_settings();
+    for (int i = PR_LEV0; i < PR_COUNT; ++i) apply_mix_param(i);
+  }
+  // ядро -> параметры: что изменилось само (сброс, Lock-копия, ручки страницы 5), пометить для хоста
+  void pull_mix() {
+    auto upd = [this](int i, float v) {
+      if (std::fabs(vals[i] - v) > 1e-4f) {
+        vals[i] = v;
+        dirty[i] = true;
+      }
+    };
+    for (int t = 0; t < kTracks; ++t) {
+      const Mix& m = looper->mix(t);
+      upd(PR_LEV0 + t, m.level_db);
+      upd(PR_PAN0 + t, std::round(m.pan * 100.0f));
+      upd(PR_CHM0 + t, (float)m.mode);
+    }
+    upd(PR_DRY, looper->dry_db());
+    upd(PR_MASTER, looper->master_db());
+    upd(PR_LIMIT, looper->limiter() ? 1.0f : 0.0f);
   }
 };
 
@@ -168,10 +242,45 @@ int find_param(const Plugin* pl, LV2_URID key) {
 }
 
 void set_param(Plugin* pl, int i, double v) {
-  int x = (int)std::lround(v);
+  float x = kParams[i].is_float ? (float)v : (float)std::lround(v);
   if (x < kParams[i].lo) x = kParams[i].lo;
   if (x > kParams[i].hi) x = kParams[i].hi;
   pl->vals[i] = x;
+}
+
+// Ручка страницы 5 с захватом: cur — текущее значение цели, tol — допуск «прошли через него».
+// Возвращает true и новое значение, когда ручка ведёт цель.
+bool catch_knob(Plugin::Catch& c, float v, int target, float cur, float tol) {
+  if (!c.init) {
+    c.init = true;
+    c.last = v;
+    return false;
+  }
+  if (std::fabs(v - c.last) < 1e-4f) return false;
+  if (target != c.target || (c.caught && std::fabs(cur - c.applied) > tol)) {
+    c.target = target;  // другая дорожка или значение изменили не ручкой: захватить заново
+    c.caught = false;
+  }
+  if (!c.caught && std::fmin(c.last, v) <= cur + tol && std::fmax(c.last, v) >= cur - tol) c.caught = true;
+  c.last = v;
+  if (!c.caught) return false;
+  c.applied = v;
+  return true;
+}
+
+void handle_knobs(Plugin* pl) {
+  Looper* lp = pl->looper;
+  const int k = lp->active_index();
+  Mix m = lp->mix(k);
+  if (catch_knob(pl->c_level, pl->in(P_LEVEL), k, m.level_db, 0.5f)) {
+    m.level_db = pl->c_level.applied;
+    lp->set_mix(k, m);
+  }
+  if (catch_knob(pl->c_pan, pl->in(P_PAN), k, m.pan * 100.0f, 2.0f)) {
+    m.pan = pl->c_pan.applied / 100.0f;
+    lp->set_mix(k, m);
+  }
+  if (catch_knob(pl->c_master, pl->in(P_MASTER), 0, lp->master_db(), 0.5f)) lp->set_master_db(pl->c_master.applied);
 }
 
 void handle_position(Plugin* pl, const LV2_Atom_Object* obj) {
@@ -198,7 +307,8 @@ void handle_patch_set(Plugin* pl, const LV2_Atom_Object* obj) {
   int i = find_param(pl, reinterpret_cast<const LV2_Atom_URID*>(prop)->body);
   if (i < 0) return;
   set_param(pl, i, atom_number(pl, val, pl->vals[i]));
-  pl->apply_settings();
+  if (i < PR_LEV0) pl->apply_settings();
+  else pl->apply_mix_param(i);
 }
 
 // Запасной путь: MIDI-клок. Используется, только пока time:Position не приходил ни разу.
@@ -254,17 +364,28 @@ void report_params(Plugin* pl) {
   lv2_atom_forge_set_buffer(&pl->forge, reinterpret_cast<uint8_t*>(seq), cap);
   LV2_Atom_Forge_Frame frame;
   lv2_atom_forge_sequence_head(&pl->forge, &frame, 0);
-  for (uint32_t k = 0; k < kReportPerRun && pl->report_next >= 0; ++k) {
-    int i = pl->report_next;
+  auto send = [pl](int i) {
     LV2_Atom_Forge_Frame of;
     lv2_atom_forge_frame_time(&pl->forge, 0);
     lv2_atom_forge_object(&pl->forge, &of, 0, pl->u.patch_Set);
     lv2_atom_forge_key(&pl->forge, pl->u.patch_property);
     lv2_atom_forge_urid(&pl->forge, pl->u.param[i]);
     lv2_atom_forge_key(&pl->forge, pl->u.patch_value);
-    lv2_atom_forge_int(&pl->forge, pl->vals[i]);
+    if (kParams[i].is_float) lv2_atom_forge_float(&pl->forge, pl->vals[i]);
+    else lv2_atom_forge_int(&pl->forge, (int32_t)pl->vals[i]);
     lv2_atom_forge_pop(&pl->forge, &of);
-    pl->report_next = i + 1 < PR_COUNT ? i + 1 : -1;
+  };
+  uint32_t sent = 0;
+  // сначала то, что ядро изменило само, потом ответ на patch:Get
+  for (int i = 0; i < PR_COUNT && sent < kReportPerRun * 2; ++i)
+    if (pl->dirty[i]) {
+      pl->dirty[i] = false;
+      send(i);
+      ++sent;
+    }
+  for (; sent < kReportPerRun * 2 && pl->report_next >= 0; ++sent) {
+    send(pl->report_next);
+    pl->report_next = pl->report_next + 1 < PR_COUNT ? pl->report_next + 1 : -1;
   }
   lv2_atom_forge_pop(&pl->forge, &frame);
 }
@@ -311,14 +432,15 @@ LV2_Handle instantiate(const LV2_Descriptor*, double rate, const char*, const LV
   u.patch_Get = M(LV2_PATCH__Get);
   u.patch_property = M(LV2_PATCH__property);
   u.patch_value = M(LV2_PATCH__value);
+  init_params();
   for (int i = 0; i < PR_COUNT; ++i) {
     char uri[96];
-    std::snprintf(uri, sizeof uri, "%s#%s", AL_URI, kParams[i].sym);
+    std::snprintf(uri, sizeof uri, "%s#%.15s", AL_URI, kParams[i].sym);
     u.param[i] = M(uri);
     pl->vals[i] = kParams[i].def;
   }
   lv2_atom_forge_init(&pl->forge, map);
-  pl->apply_settings();
+  pl->apply_all();
 
   // Пики волн для виджета: файл в /dev/shm, виджет находит его по pid процесса jalv.
   std::snprintf(pl->peaks_path, sizeof pl->peaks_path, "/dev/shm/audio_looper_%d", (int)getpid());
@@ -392,6 +514,7 @@ void run(LV2_Handle h, uint32_t n) {
     if (pl->buttons[i].down()) held |= 1u << i;
   }
 
+  handle_knobs(pl);
   lp->process(static_cast<const float*>(pl->ports[P_IN_L]), static_cast<const float*>(pl->ports[P_IN_R]),
               static_cast<float*>(pl->ports[P_OUT_L]), static_cast<float*>(pl->ports[P_OUT_R]), n, ti);
 
@@ -403,6 +526,7 @@ void run(LV2_Handle h, uint32_t n) {
     }
   }
 
+  pl->pull_mix();
   report_params(pl);
 
   // Выходы. Такт и доля — по сетке лупера (при стоящем транспорте он считает такты сам).
@@ -442,6 +566,9 @@ void run(LV2_Handle h, uint32_t n) {
   if (lp->rec_after_switch()) flags |= 1u << 24;  // запись взведена на новый парт
   pl->out(O_FLAGS, (float)flags);
   pl->out(O_POOL, lp->pool_fill());
+  for (int i = 0; i < kSlots; ++i) pl->out(O_PK1 + i, lp->peak(i));
+  pl->out(O_MPK_L, lp->master_peak(0));
+  pl->out(O_MPK_R, lp->master_peak(1));
 }
 
 void cleanup(LV2_Handle h) {
@@ -477,9 +604,14 @@ LV2_Worker_Status work_response(LV2_Handle h, uint32_t size, const void* data) {
 LV2_State_Status save(LV2_Handle h, LV2_State_Store_Function store, LV2_State_Handle sh, uint32_t,
                       const LV2_Feature* const*) {
   Plugin* pl = static_cast<Plugin*>(h);
-  for (int i = 0; i < PR_COUNT; ++i)
-    store(sh, pl->u.param[i], &pl->vals[i], sizeof(int32_t), pl->u.atom_Int,
-          LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE);
+  for (int i = 0; i < PR_COUNT; ++i) {
+    if (kParams[i].is_float) {
+      store(sh, pl->u.param[i], &pl->vals[i], sizeof(float), pl->u.atom_Float, LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE);
+    } else {
+      const int32_t v = (int32_t)pl->vals[i];
+      store(sh, pl->u.param[i], &v, sizeof v, pl->u.atom_Int, LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE);
+    }
+  }
   return LV2_STATE_SUCCESS;
 }
 
@@ -491,8 +623,9 @@ LV2_State_Status restore(LV2_Handle h, LV2_State_Retrieve_Function retrieve, LV2
     uint32_t type = 0, flags = 0;
     const void* v = retrieve(sh, pl->u.param[i], &size, &type, &flags);
     if (v && type == pl->u.atom_Int && size == sizeof(int32_t)) set_param(pl, i, *static_cast<const int32_t*>(v));
+    if (v && type == pl->u.atom_Float && size == sizeof(float)) set_param(pl, i, *static_cast<const float*>(v));
   }
-  pl->apply_settings();
+  pl->apply_all();
   pl->report_next = 0;  // сообщить хосту и виджету новые значения
   return LV2_STATE_SUCCESS;
 }
