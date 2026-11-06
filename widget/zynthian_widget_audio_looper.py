@@ -330,6 +330,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             "part": int(m.get("o_part", 0)) % 4,
             "pend": int(m.get("o_pend", -1)),
             "parts": int(m.get("o_parts", 0)),
+            "rec_next": bool(flags >> 24 & 1),
             "widget": int(m.get("o_widget", 0)),
             "quantize": self._zval("mode") == 1,
             "rop": self._zval("rec_order") == 1,
@@ -690,7 +691,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         c = self.widget_canvas
         gap = 4
         tw = (x1 - x0 - gap * 2) / 3.0
-        if now < self.action_until and st["act"]:
+        if st["rec_next"] and st["pend"] >= 0:
+            hint, hcol = "REC \u2192 PART %d" % (st["pend"] + 1), RED
+        elif now < self.action_until and st["act"]:
             hint, hcol = ACTIONS[st["act"]]
         else:
             hint, hcol = self._rec_hint(st)

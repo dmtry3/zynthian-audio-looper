@@ -95,6 +95,7 @@ class Looper {
   int active() const { return active_; }
   int part() const { return cur_part_; }
   int pending_part() const { return pend_part_; }
+  bool rec_after_switch() const { return rec_after_switch_; }
   uint32_t parts_mask() const;  // бит p: в парте p что-то записано
   bool user_stopped() const { return user_stop_; }
   int playstop_pending() const { return ps_pending_; }
@@ -230,6 +231,7 @@ class Looper {
   int cur_part_ = 0;
   int pend_part_ = -1;      // парт, ждущий границы (-1 нет)
   bool clones_pending_ = false;
+  bool rec_after_switch_ = false;  // Rec нажат, пока переход ждёт: запись в новом парте на границе
   int ps_pending_ = 0;      // ждёт границы: 1 — стоп, 2 — старт
   // рабочий поток: одно задание за раз
   bool job_pending_ = false, job_running_ = false;

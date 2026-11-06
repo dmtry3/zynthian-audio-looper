@@ -435,6 +435,7 @@ void run(LV2_Handle h, uint32_t n) {
     if (v.stopped) flags |= 1u << (16 + i);
     if (v.locked) flags |= 1u << (20 + i);
   }
+  if (lp->rec_after_switch()) flags |= 1u << 24;  // запись взведена на новый парт
   pl->out(O_FLAGS, (float)flags);
   pl->out(O_POOL, lp->pool_fill());
 }

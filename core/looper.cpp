@@ -33,7 +33,11 @@ void Looper::command(Cmd c) {
   const int a = idx(active_);
   Track& t = tr_[a];
   switch (c) {
-    case Cmd::Rec: rec_press(a); break;
+    case Cmd::Rec:
+      // переход ждёт границы: запись взводится в новом парте (повторное нажатие — отмена)
+      if (pend_part_ >= 0) rec_after_switch_ = !rec_after_switch_;
+      else rec_press(a);
+      break;
     case Cmd::Undo: undo(a); break;
     case Cmd::Redo: redo(a); break;
     case Cmd::ResetTrack: reset_track(a); break;
@@ -90,6 +94,7 @@ void Looper::command(Cmd c) {
       if (pend_part_ >= 0) {  // переход ждёт границы: цель дальше или назад
         const int np = (pend_part_ + d) % kParts;
         pend_part_ = np == cur_part_ ? -1 : np;
+        if (pend_part_ < 0) rec_after_switch_ = false;
         break;
       }
       const int target = (cur_part_ + d) % kParts;
@@ -336,6 +341,7 @@ void Looper::reset_all_now() {
   user_stop_ = false;
   ps_pending_ = 0;
   pend_part_ = -1;
+  rec_after_switch_ = false;
   for (int ti = 0; ti < kTracks; ++ti) {
     Track& t = tr_[ti];
     mark_peaks(t);
@@ -1071,6 +1077,13 @@ void Looper::switch_part(int p) {
   for (int k = p * kSlots; k < (p + 1) * kSlots; ++k) mark_peaks(tr_[k]);
   if (peaks_)
     for (int i = 0; i < kSlots; ++i) __atomic_store_n(&peaks_->t[i].dub_active, 0u, __ATOMIC_RELEASE);
+  if (rec_after_switch_) {  // запись с границы перехода на активной дорожке нового парта
+    rec_after_switch_ = false;
+    const int k = idx(active_);
+    Track& t = tr_[k];
+    if (t.st == TState::Empty) start_rec(k);
+    else if (t.st == TState::Play && !t.stopped && !t.ustop) start_dub(k);
+  }
 }
 
 void Looper::resync(int ti) {

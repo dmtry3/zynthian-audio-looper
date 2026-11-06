@@ -757,6 +757,33 @@ static void test_parts_edges() {
     s.run(BAR);
     CHECK(s.v(1).state == 3 && std::fabs(s.v(1).len_s - 2.0f) < 1e-3f);
   }
+  {  // Rec, пока переход ждёт: запись с границы в новом парте, старый парт не трогается
+    Sim s(64, true);
+    s.ti.rolling = true;
+    s.in_l = sine(200.0, 0.3f);
+    s.run(BLOCK);
+    s.cmd(Cmd::Rec);
+    s.run(BAR * 2);
+    s.cmd(Cmd::Rec);   // парт 1, дорожка 1: 1 такт, играет
+    s.run(BAR / 2);
+    s.cmd(Cmd::PartNext);
+    s.cmd(Cmd::Rec);
+    CHECK(s.lp->rec_after_switch() && s.v(0).state == 3);  // в старом парте не овердаб
+    s.run(BAR / 2 + BLOCK * 2);
+    CHECK(s.lp->part() == 1 && s.lp->active() == 0 && s.v(0).state == 2);  // пишет с границы
+    s.run(BAR);
+    s.cmd(Cmd::Rec);
+    s.run(BLOCK * 4);
+    CHECK(s.v(0).state == 3 && std::fabs(s.v(0).len_s - 2.0f) < 1e-3f);
+    s.cmd(Cmd::PartPrev);   // назад: старый парт без овердаба (1 слой — основа)
+    s.run(BAR + BLOCK * 4);
+    CHECK(s.lp->part() == 0 && s.v(0).state == 3 && s.v(0).layers == 1);
+    // отмена: Rec дважды до границы
+    s.cmd(Cmd::PartNext);
+    s.cmd(Cmd::Rec);
+    s.cmd(Cmd::Rec);
+    CHECK(!s.lp->rec_after_switch());
+  }
   {  // Lock-дорожка в овердабе: копия после затухания овердаба, без щелчка
     Sim s(64, true);
     s.ti.rolling = true;
