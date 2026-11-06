@@ -282,7 +282,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                     self.refresh_gui()
                     return
                 if what == "chm":
-                    self._zset(arg, 1 - self._zval(arg))
+                    self._zset(arg, (self._zval(arg) + 1) % 3)  # ST -> L -> R
                 elif what == "mute":
                     self._zset("tmute", arg)
                 elif what == "lim":
@@ -802,10 +802,11 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             by0 = py0 + ph + hh * 0.04
             bh = max(14, hh * 0.09)
             bw = (cw * 0.76 - 4) / 2
-            split = self._zval("chm%d" % n) == 1
+            chm = self._zval("chm%d" % n)  # 0 стерео, 1 только L, 2 только R
+            split = chm in (1, 2)
             bx = cx0 + cw * 0.12
             c.create_rectangle(bx, by0, bx + bw, by0 + bh, fill="#3a2a5a" if split else "#262626", width=0)
-            self._text(bx + bw / 2, by0 + bh / 2, "SPLIT" if split else "ST", bw * 0.9, bh * 0.7,
+            self._text(bx + bw / 2, by0 + bh / 2, ("ST", "L", "R")[chm if split else 0], bw * 0.9, bh * 0.7,
                        PURPLE if split else "#b0b0b0")
             self.hits.append((bx, by0, bx + bw, by0 + bh, "chm", "chm%d" % n))
             mx = bx + bw + 4

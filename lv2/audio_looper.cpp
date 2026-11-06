@@ -95,7 +95,7 @@ enum Param {
   PR_REC_ORDER, PR_MODE, PR_LEN1, PR_LEN2, PR_LEN3, PR_LEN4, PR_FADE_OUT, PR_FADE_IN, PR_REV, PR_MUTE_Q, PR_PART_Q,
   PR_LEV0,                      // lev1..lev16: уровень дорожки, дБ
   PR_PAN0 = PR_LEV0 + kTracks,  // pan1..pan16: −100..100
-  PR_CHM0 = PR_PAN0 + kTracks,  // chm1..chm16: 0 стерео, 1 раздельно
+  PR_CHM0 = PR_PAN0 + kTracks,  // chm1..chm16: 0 стерео, 1 только L, 2 только R
   PR_DRY = PR_CHM0 + kTracks,
   PR_MASTER,
   PR_LIMIT,
@@ -129,7 +129,7 @@ void init_params() {
     std::snprintf(kParams[PR_LEV0 + t].sym, 16, "lev%d", t + 1);
     kParams[PR_PAN0 + t] = ParamDef{{}, 0.0f, -100.0f, 100.0f, false};
     std::snprintf(kParams[PR_PAN0 + t].sym, 16, "pan%d", t + 1);
-    kParams[PR_CHM0 + t] = ParamDef{{}, 0.0f, 0.0f, 1.0f, false};
+    kParams[PR_CHM0 + t] = ParamDef{{}, 0.0f, 0.0f, 2.0f, false};
     std::snprintf(kParams[PR_CHM0 + t].sym, 16, "chm%d", t + 1);
   }
   kParams[PR_DRY] = ParamDef{"dry", 0.0f, kMinDb, 6.0f, true};

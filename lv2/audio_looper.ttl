@@ -792,7 +792,7 @@
     lv2:symbol "chm1" ;
     rdfs:label "Ch Mode 1" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -801,7 +801,7 @@
     lv2:symbol "chm2" ;
     rdfs:label "Ch Mode 2" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -810,7 +810,7 @@
     lv2:symbol "chm3" ;
     rdfs:label "Ch Mode 3" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -819,7 +819,7 @@
     lv2:symbol "chm4" ;
     rdfs:label "Ch Mode 4" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -828,7 +828,7 @@
     lv2:symbol "chm5" ;
     rdfs:label "Ch Mode 5" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -837,7 +837,7 @@
     lv2:symbol "chm6" ;
     rdfs:label "Ch Mode 6" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -846,7 +846,7 @@
     lv2:symbol "chm7" ;
     rdfs:label "Ch Mode 7" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -855,7 +855,7 @@
     lv2:symbol "chm8" ;
     rdfs:label "Ch Mode 8" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -864,7 +864,7 @@
     lv2:symbol "chm9" ;
     rdfs:label "Ch Mode 9" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -873,7 +873,7 @@
     lv2:symbol "chm10" ;
     rdfs:label "Ch Mode 10" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -882,7 +882,7 @@
     lv2:symbol "chm11" ;
     rdfs:label "Ch Mode 11" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -891,7 +891,7 @@
     lv2:symbol "chm12" ;
     rdfs:label "Ch Mode 12" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -900,7 +900,7 @@
     lv2:symbol "chm13" ;
     rdfs:label "Ch Mode 13" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -909,7 +909,7 @@
     lv2:symbol "chm14" ;
     rdfs:label "Ch Mode 14" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -918,7 +918,7 @@
     lv2:symbol "chm15" ;
     rdfs:label "Ch Mode 15" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
@@ -927,7 +927,7 @@
     lv2:symbol "chm16" ;
     rdfs:label "Ch Mode 16" ;
     rdfs:range atom:Int ;
-    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 1 ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 

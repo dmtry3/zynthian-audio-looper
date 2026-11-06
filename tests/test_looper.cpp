@@ -850,7 +850,7 @@ static void test_mixer() {
       pr = std::fmax(pr, std::fabs(s.out_r[i]));
     }
   };
-  {  // «Раздельно»: в центре L и R не смешиваются, вправо — L переезжает направо
+  {  // «L»: левый вход при панораме 0 посередине, на краях с одной стороны; «R»: левый не слышен
     Sim s;
     rec_left_only(s);
     const int k = s.lp->active_index();
@@ -860,17 +860,23 @@ static void test_mixer() {
     s.run(L);
     float pl, pr;
     peak_lr(s, pl, pr);
-    CHECK(pl > 0.39f && pl < 0.41f && pr < 1e-6f);
+    CHECK(std::fabs(pl - pr) < 0.005f && std::fabs(pl - 0.4f * 0.70711f) < 0.005f);
     m.pan = 1.0f;
     s.lp->set_mix(k, m);
     s.run(L);
     peak_lr(s, pl, pr);
     CHECK(pl < 1e-4f && pr > 0.39f && pr < 0.41f);
-    m.pan = 0.5f;  // посередине: поровну по мощности
+    m.pan = -1.0f;
     s.lp->set_mix(k, m);
     s.run(L);
     peak_lr(s, pl, pr);
-    CHECK(std::fabs(pl - pr) < 0.01f && std::fabs(pl * pl + pr * pr - 0.16f) < 0.01f);
+    CHECK(pr < 1e-4f && pl > 0.39f && pl < 0.41f);
+    m.pan = 0.0f;
+    m.mode = 2;  // только R: записан только L — тишина
+    s.lp->set_mix(k, m);
+    s.run(L);
+    peak_lr(s, pl, pr);
+    CHECK(pl < 1e-4f && pr < 1e-4f);
   }
   {  // «Стерео»: центр как записано, влево — правый канал уходит, левый +3 дБ
     Sim s;

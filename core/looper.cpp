@@ -422,23 +422,20 @@ void Looper::reset_mixer() {
 void Looper::mix_matrix(const Mix& m, float out[4]) {
   const float g = db_gain(m.level_db);
   const float p = m.pan < -1.0f ? -1.0f : (m.pan > 1.0f ? 1.0f : m.pan);
-  const float hp = 1.5707963f;
   if (m.mode == 0) {  // стерео: баланс с постоянной мощностью, в центре как записано
     const float th = (p + 1.0f) * 0.7853982f;
     out[0] = g * std::cos(th) * 1.4142136f;
     out[1] = 0.0f;
     out[2] = 0.0f;
     out[3] = g * std::sin(th) * 1.4142136f;
-  } else if (p >= 0.0f) {  // раздельно, вправо: L плавно переезжает направо
-    out[0] = g * std::cos(p * hp);
-    out[1] = 0.0f;
-    out[2] = g * std::sin(p * hp);
-    out[3] = g;
-  } else {  // раздельно, влево: R переезжает налево
-    out[0] = g;
-    out[1] = g * std::sin(-p * hp);
-    out[2] = 0.0f;
-    out[3] = g * std::cos(-p * hp);
+  } else {  // моно L или моно R: играет один вход, панорама ставит его с постоянной мощностью
+    const float th = (p + 1.0f) * 0.7853982f;
+    const float a = g * std::cos(th), b = g * std::sin(th);
+    const bool left = m.mode == 1;
+    out[0] = left ? a : 0.0f;  // L -> левый выход
+    out[1] = left ? 0.0f : a;  // R -> левый
+    out[2] = left ? b : 0.0f;  // L -> правый
+    out[3] = left ? 0.0f : b;  // R -> правый
   }
 }
 
