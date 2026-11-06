@@ -267,7 +267,7 @@ def main():
     no_overlap("800x480, дорожки играют")
     polys = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "polygon"]
     stip = [i for i in polys if wdg.widget_canvas.itemcget(i, "stipple")]
-    check("волны: сумма (2 части) на играющих дорожках, овердаб полупрозрачно", len(stip) == 1 and len(polys) >= 6 + 1)
+    check("волны: сумма на играющих дорожках, овердаб полупрозрачно", len(stip) == 1 and len(polys) >= 3 + 1)
     m["o_st1"] = 3.0
     wdg.update()
     polys = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "polygon"]

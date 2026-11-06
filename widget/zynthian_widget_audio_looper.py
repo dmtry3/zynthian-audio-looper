@@ -585,12 +585,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         top, botrev, n = g["sum"]
         if n < 2:
             return
-        # сыгранная часть ярче (при reverse — справа от позиции)
-        cp = max(1, min(n - 1, int(round(pos * n))))
-        bright, dim = color, mix(color, BG, 0.5)
-        left, right = (bright, dim) if not reversed_ else (dim, bright)
-        c.create_polygon(top[:2 * cp + 2] + botrev[2 * (n - cp - 1):], fill=left, outline="")
-        c.create_polygon(top[2 * cp:] + botrev[:2 * (n - cp)], fill=right, outline="")
+        # волна ровного цвета дорожки; позицию показывает белая линия
+        c.create_polygon(top + botrev, fill=color, outline="")
         # слои овердабов: полупрозрачно поверх (штриховка), старые снизу
         for no, (lt, lb, ln) in g["layers"]:
             if ln >= 2:
