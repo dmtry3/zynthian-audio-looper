@@ -100,7 +100,7 @@ enum TempoSrc { SRC_NONE = 0, SRC_POSITION = 1, SRC_CLOCK = 2 };
 struct Uris {
   LV2_URID atom_Object, atom_Blank, atom_Float, atom_Double, atom_Int, atom_Long, atom_URID, atom_Sequence;
   LV2_URID midi_Event;
-  LV2_URID time_Position, time_bar, time_barBeat, time_bpm, time_bpb, time_speed;
+  LV2_URID time_Position, time_bar, time_barBeat, time_bpm, time_bpb, time_speed, time_frame;
   LV2_URID patch_Set, patch_Get, patch_property, patch_value;
   LV2_URID param[PR_COUNT];
 };
@@ -165,10 +165,11 @@ void set_param(Plugin* pl, int i, double v) {
 }
 
 void handle_position(Plugin* pl, const LV2_Atom_Object* obj) {
-  const LV2_Atom *bpm = nullptr, *bpb = nullptr, *speed = nullptr, *bar = nullptr, *bb = nullptr;
+  const LV2_Atom *bpm = nullptr, *bpb = nullptr, *speed = nullptr, *bar = nullptr, *bb = nullptr, *fr = nullptr;
   lv2_atom_object_get(obj, pl->u.time_bpm, &bpm, pl->u.time_bpb, &bpb, pl->u.time_speed, &speed,
-                      pl->u.time_bar, &bar, pl->u.time_barBeat, &bb, 0);
+                      pl->u.time_bar, &bar, pl->u.time_barBeat, &bb, pl->u.time_frame, &fr, 0);
   PositionMsg m;
+  if (fr) { m.has_frame = true; m.frame = (int64_t)atom_number(pl, fr, 0); }
   if (bpm) { m.has_bpm = true; m.bpm = atom_number(pl, bpm, -1); }
   if (bpb) { m.has_bpb = true; m.bpb = atom_number(pl, bpb, -1); }
   if (speed) { m.has_speed = true; m.speed = atom_number(pl, speed, 0); }
@@ -296,6 +297,7 @@ LV2_Handle instantiate(const LV2_Descriptor*, double rate, const char*, const LV
   u.time_bpm = M(LV2_TIME__beatsPerMinute);
   u.time_bpb = M(LV2_TIME__beatsPerBar);
   u.time_speed = M(LV2_TIME__speed);
+  u.time_frame = M(LV2_TIME__frame);
   u.patch_Set = M(LV2_PATCH__Set);
   u.patch_Get = M(LV2_PATCH__Get);
   u.patch_property = M(LV2_PATCH__property);

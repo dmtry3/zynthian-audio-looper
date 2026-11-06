@@ -66,6 +66,7 @@ class Looper {
   // RT
   void set_settings(const Settings& s) { set_ = s; }
   // Время текущего блока. Вызывать до command(), чтобы команды видели свежий транспорт.
+  // Транспорт идёт: сетка = позиция Zynthian. Стоит: лупер считает доли сам по темпу.
   void set_time(const TimeInfo& t);
   const Settings& settings() const { return set_; }
   void command(Cmd c);
@@ -170,7 +171,7 @@ class Looper {
   Track tr_[kTracks];
   int active_ = 0;
   // сетка
-  double beats_ = 0.0, bpf_ = 0.0, anchor_ = 0.0;
+  double beats_ = 0.0, bpf_ = 0.0;  // сетка: при стоящем транспорте лупер считает сам
   int bpb_ = 4;
   bool rolling_ = false;
   // рабочий поток: одно задание за раз

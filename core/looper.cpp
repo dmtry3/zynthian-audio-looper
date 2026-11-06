@@ -84,7 +84,6 @@ void Looper::rec_press(int ti) {
         start_rec(ti);
       } else if (!rolling_ && !has_content()) {
         // Транспорт стоит и лупов нет: запись сразу, такты считаем от неё.
-        anchor_ += beats_;
         beats_ = 0.0;
         start_rec(ti);
       } else {
@@ -315,7 +314,6 @@ void Looper::reset_all_now() {
     t.undo_after_dub = t.reset_after_dub = false;
     t.seam_t = kNoSeam;
   }
-  anchor_ = 0.0;
 }
 
 void Looper::start_reverse(Track& t, double n) {
@@ -689,8 +687,7 @@ void Looper::set_time(const TimeInfo& ti) {
   bpf_ = ti.beats_per_frame;
   bpb_ = ti.bpb > 0 ? ti.bpb : 4;
   rolling_ = ti.rolling;
-  if (rolling_) anchor_ = 0.0;  // сетка Zynthian
-  beats_ = ti.beats - anchor_;
+  if (rolling_) beats_ = ti.beats;  // сетка Zynthian; иначе продолжаем свой счёт
 }
 
 void Looper::process(const float* in_l, const float* in_r, float* out_l, float* out_r, uint32_t n,

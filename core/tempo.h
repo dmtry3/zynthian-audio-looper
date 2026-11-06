@@ -8,14 +8,15 @@ namespace alp {
 
 // Сообщение time:Position. Поля, которых не было в сообщении, помечены has_* = false.
 struct PositionMsg {
-  bool has_bpm = false, has_bpb = false, has_speed = false, has_pos = false;
+  bool has_bpm = false, has_bpb = false, has_speed = false, has_pos = false, has_frame = false;
   double bpm = 0, bpb = 0, speed = 0;
+  int64_t frame = 0;             // кадр транспорта JACK (jalv шлёт его всегда)
   double bar = 0, bar_beat = 0;  // такт от 0, доля внутри такта от 0 (с дробной частью)
 };
 
-// Позиция в долях. Между сообщениями time:Position идёт сама по темпу:
-// Zynthian (jalv) шлёт позицию не каждый блок, а при изменениях.
-// Когда транспорт стоит, счёт продолжается по темпу: лупер считает такты сам.
+// Позиция транспорта Zynthian в долях. Между сообщениями time:Position идёт сама по темпу:
+// jalv шлёт позицию не каждый блок, а при изменениях. Пока транспорт стоит, позиция стоит.
+// Если в сообщении нет такта и доли (только кадр), позиция досчитывается по сдвигу кадра.
 class TempoClock {
  public:
   void set_sample_rate(double sr) { sr_ = sr > 0 ? sr : 48000.0; }
@@ -34,10 +35,23 @@ class TempoClock {
       if (v >= 1 && v <= 16) bpb_ = v;
     }
     if (m.has_speed) rolling_ = m.speed != 0.0;
-    if (m.has_pos && m.bar >= 0 && m.bar_beat >= 0) beats_ = m.bar * bpb_ + m.bar_beat;
+    if (m.has_pos && m.bar >= 0 && m.bar_beat >= 0) {
+      beats_ = m.bar * bpb_ + m.bar_beat;
+    } else if (m.has_frame && have_frame_) {
+      beats_ += (double)(m.frame - frame_) * bpm_ / 60.0 / sr_;
+      if (beats_ < 0) beats_ = 0;
+    }
+    if (m.has_frame) {
+      frame_ = m.frame;
+      have_frame_ = true;
+    }
   }
 
-  void advance(uint32_t frames) { beats_ += bpm_ / 60.0 * frames / sr_; }
+  void advance(uint32_t frames) {
+    if (!rolling_) return;
+    beats_ += bpm_ / 60.0 * frames / sr_;
+    frame_ += frames;
+  }
 
   double bpm() const { return bpm_; }
   int bpb() const { return bpb_; }
@@ -54,6 +68,8 @@ class TempoClock {
   bool rolling_ = false;
   uint32_t messages_ = 0;
   double beats_ = 0.0;
+  int64_t frame_ = 0;
+  bool have_frame_ = false;
 };
 
 // MIDI-клок: 24 тика на долю. Темп по среднему интервалу за последнюю долю.

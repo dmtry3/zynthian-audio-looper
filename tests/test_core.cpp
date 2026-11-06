@@ -120,6 +120,36 @@ static void test_tempo_clock() {
   CHECK(k.messages() == 3);
 }
 
+// Остановка и повторный пуск: пока стоит — позиция стоит; пуск без такта и доли — по кадру.
+static void test_tempo_stop_start() {
+  TempoClock k;
+  k.set_sample_rate(SR);
+  PositionMsg m;
+  m.has_bpm = m.has_bpb = m.has_speed = m.has_pos = m.has_frame = true;
+  m.bpm = 120; m.bpb = 4; m.speed = 1; m.bar = 0; m.bar_beat = 0; m.frame = 0;
+  k.on_position(m);
+  for (int i = 0; i < 375; ++i) k.advance(128);  // 1 с = 2 доли
+  CHECK(std::fabs(k.beats() - 2.0) < 1e-9);
+  PositionMsg stop;
+  stop.has_speed = stop.has_frame = true;
+  stop.speed = 0; stop.frame = 48000;
+  k.on_position(stop);
+  for (int i = 0; i < 375 * 3; ++i) k.advance(128);  // стоим 3 с
+  CHECK(std::fabs(k.beats() - 2.0) < 1e-9);         // позиция стоит
+  PositionMsg go;                                    // пуск с того же места, без такта и доли
+  go.has_speed = go.has_frame = true;
+  go.speed = 1; go.frame = 48000;
+  k.on_position(go);
+  CHECK(k.rolling() && std::fabs(k.beats() - 2.0) < 1e-9);
+  for (int i = 0; i < 375; ++i) k.advance(128);
+  CHECK(std::fabs(k.beats() - 4.0) < 1e-9);
+  PositionMsg zero;                                  // перемотка в начало без такта и доли
+  zero.has_speed = zero.has_frame = true;
+  zero.speed = 1; zero.frame = 0;
+  k.on_position(zero);
+  CHECK(std::fabs(k.beats()) < 1e-9);
+}
+
 static void test_midi_clock() {
   MidiClock c;
   c.set_sample_rate(SR);
@@ -142,6 +172,7 @@ static void test_midi_clock() {
 int main() {
   test_gestures();
   test_tempo_clock();
+  test_tempo_stop_start();
   test_midi_clock();
   std::printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
