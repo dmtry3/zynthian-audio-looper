@@ -957,6 +957,123 @@ static void test_mixer() {
   }
 }
 
+// Частота по пересечениям нуля на отрезке.
+static double zc_freq(const std::vector<float>& v) {
+  int n = 0;
+  for (size_t i = 1; i < v.size(); ++i)
+    if ((v[i - 1] < 0) != (v[i] < 0)) ++n;
+  return n / 2.0 / ((double)v.size() / SR);
+}
+
+// Ошибка фазы дорожки (кадры) относительно сетки: цикл в 1 такт начинается на черте.
+static double phase_err(Sim& s, double beats, double loop_beats, uint64_t L) {
+  double ph = std::fmod(beats / loop_beats, 1.0);
+  if (ph < 0) ph += 1.0;
+  double err = (double)s.v().pos * (double)L - ph * (double)L;
+  if (err > L / 2.0) err -= (double)L;
+  if (err < -(double)L / 2.0) err += (double)L;
+  return err;
+}
+
+// Следование темпу: 120 -> 140 без щелчков и вибрато, после установления ошибка ≤ 1 мс.
+static void test_tempo_follow() {
+  const uint64_t BAR = 96000;
+  Sim s(64, true);
+  s.ti.rolling = true;
+  s.set.length[0] = 1;
+  s.apply();
+  s.in_l = sine(200.0, 0.3f);
+  s.run(BLOCK);
+  s.cmd(Cmd::Rec);
+  s.run(2 * BAR + BLOCK * 8);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(BAR);
+  CHECK(std::fabs(phase_err(s, s.beats_now(), 4.0, BAR)) <= 48.0);
+  // темп 140 с этого момента
+  const uint64_t tc = s.t;
+  const double bc = s.beats_now();
+  s.bpm = 140.0;
+  s.beats_at = [tc, bc](uint64_t t) { return bc + (double)(t - tc) * 140.0 / 60.0 / SR; };
+  s.run((uint64_t)(SR * 4));
+  const double e = phase_err(s, s.beats_now(), 4.0, BAR);
+  CHECK(std::fabs(e) <= 48.0);  // ≤ 1 мс
+  // скорость установилась: 140/120, без вибрато
+  float mn = 9, mx = 0;
+  for (int k = 0; k < 40; ++k) {
+    s.run(BLOCK * 10);
+    mn = std::fmin(mn, s.v().espeed);
+    mx = std::fmax(mx, s.v().espeed);
+  }
+  CHECK(std::fabs(mx - 140.0f / 120.0f) < 0.002f && mx - mn < 0.001f);
+  CHECK(std::fabs(phase_err(s, s.beats_now(), 4.0, BAR)) <= 48.0);
+  CHECK(s.max_step(2 * BAR, s.t) < 0.03f);
+  std::printf("  tempo 120->140: phase error after 4 s = %.1f frames\n", e);
+  s.wav("tempo_follow");
+}
+
+// Ручная скорость: плавный ход без щелчков, 0,25× снизу; сброс — к 1× и в фазу с тактом.
+static void test_manual_speed() {
+  const uint64_t BAR = 96000;
+  Sim s(64, true);
+  s.ti.rolling = true;
+  s.set.length[0] = 1;
+  s.apply();
+  s.in_l = sine(200.0, 0.3f);
+  s.run(BLOCK);
+  s.cmd(Cmd::Rec);
+  s.run(2 * BAR + BLOCK * 8);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(BAR);
+  const int k = s.lp->active_index();
+  s.lp->set_speed(k, 2.0f);
+  s.run(BAR / 2);
+  CHECK(std::fabs(s.v().speed - 2.0f) < 1e-4f);
+  CHECK(std::fabs(zc_freq(s.slice(s.t - 9600, 9600)) - 400.0) < 6.0);
+  s.lp->set_speed(k, 0.1f);  // ниже предела
+  CHECK(s.lp->speed(k) == 0.25f);
+  s.run(BAR / 2);
+  CHECK(std::fabs(zc_freq(s.slice(s.t - 19200, 19200)) - 50.0) < 4.0);
+  CHECK(s.max_step(3 * BAR, s.t) < 0.03f);
+  s.run(BAR + BAR / 3);  // фаза уехала
+  CHECK(std::fabs(phase_err(s, s.beats_now(), 4.0, BAR)) > 1000.0);
+  s.lp->speed_reset(k);
+  s.run(2 * BAR);  // доехала до 1×, на ближайшем такте встала в фазу
+  CHECK(s.v().speed == 1.0f);
+  CHECK(std::fabs(phase_err(s, s.beats_now(), 4.0, BAR)) <= 48.0);
+  CHECK(s.max_step(3 * BAR, s.t) < 0.03f);
+  // привязка по полутонам: 1,1 -> 2 полутона
+  s.set.spd_snap = 1;
+  s.apply();
+  s.lp->set_speed(k, 1.1f);
+  s.run(BAR / 2);
+  CHECK(std::fabs(s.v().speed - 1.12246f) < 1e-3f);
+  s.wav("manual_speed");
+}
+
+// Овердаб на 1,5× как на ленте: при возврате к 1× слой звучит в 1,5 раза ниже.
+static void test_dub_at_speed() {
+  Sim s;  // Free: без следования темпу
+  const uint64_t L = 48000;
+  s.cmd(Cmd::Rec);
+  s.run(L);  // основа — тишина
+  s.cmd(Cmd::Rec);
+  s.run(L);
+  const int k = s.lp->active_index();
+  s.lp->set_speed(k, 1.5f);
+  s.run(L / 2);
+  s.in_l = sine(300.0, 0.3f);
+  s.cmd(Cmd::Rec);
+  s.run(L);  // полтора цикла на 1,5×
+  s.cmd(Cmd::Rec);
+  s.run(BLOCK * 8);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.lp->set_speed(k, 1.0f);
+  s.run(L);
+  CHECK(std::fabs(zc_freq(s.slice(s.t - L / 2, L / 2)) - 200.0) < 4.0);
+  CHECK(rms(s.slice(s.t - L / 2, L / 2)) > 0.15f);
+  s.wav("dub_at_speed");
+}
+
 int main() {
   test_record_play();
   test_overdubs_undo();
@@ -971,6 +1088,9 @@ int main() {
   test_parts_edges();
   test_part_at_loop_end();
   test_mixer();
+  test_tempo_follow();
+  test_manual_speed();
+  test_dub_at_speed();
   test_quantize();
   test_rop();
   test_reset();

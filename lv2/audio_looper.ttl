@@ -89,7 +89,27 @@
         <urn:audiolooper:looper#dry> ,
         <urn:audiolooper:looper#mst_db> ,
         <urn:audiolooper:looper#limiter> ,
-        <urn:audiolooper:looper#tmute> ;
+        <urn:audiolooper:looper#tmute> ,
+        <urn:audiolooper:looper#tempo_glide> ,
+        <urn:audiolooper:looper#spd_snap> ,
+        <urn:audiolooper:looper#spd_glide> ,
+        <urn:audiolooper:looper#spd1> ,
+        <urn:audiolooper:looper#spd2> ,
+        <urn:audiolooper:looper#spd3> ,
+        <urn:audiolooper:looper#spd4> ,
+        <urn:audiolooper:looper#spd5> ,
+        <urn:audiolooper:looper#spd6> ,
+        <urn:audiolooper:looper#spd7> ,
+        <urn:audiolooper:looper#spd8> ,
+        <urn:audiolooper:looper#spd9> ,
+        <urn:audiolooper:looper#spd10> ,
+        <urn:audiolooper:looper#spd11> ,
+        <urn:audiolooper:looper#spd12> ,
+        <urn:audiolooper:looper#spd13> ,
+        <urn:audiolooper:looper#spd14> ,
+        <urn:audiolooper:looper#spd15> ,
+        <urn:audiolooper:looper#spd16> ,
+        <urn:audiolooper:looper#sreset> ;
     lv2:port
     [
         a lv2:InputPort , lv2:AudioPort ; lv2:index 18 ; lv2:symbol "in_l" ; lv2:name "In L" ;
@@ -193,7 +213,7 @@
     ] , [
         a lv2:InputPort , lv2:ControlPort ;
         lv2:index 17 ; lv2:symbol "speed" ; lv2:name "Speed" ;
-        lv2:default 1 ; lv2:minimum 0.5 ; lv2:maximum 2 ; lv2:portProperty pprops:logarithmic ;
+        lv2:default 1 ; lv2:minimum 0.25 ; lv2:maximum 2 ; lv2:portProperty pprops:logarithmic ;
         lv2:displayPriority 10 ; pg:group <urn:audiolooper:looper#g_mix> ;
     ] , [
         a lv2:OutputPort , lv2:ControlPort ;
@@ -344,6 +364,38 @@
         a lv2:OutputPort , lv2:ControlPort ;
         lv2:index 59 ; lv2:symbol "o_mpk_r" ; lv2:name "Out: Master Peak R" ;
         lv2:minimum 0 ; lv2:maximum 2 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 60 ; lv2:symbol "o_spd1" ; lv2:name "Out: Speed 1" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 61 ; lv2:symbol "o_spd2" ; lv2:name "Out: Speed 2" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 62 ; lv2:symbol "o_spd3" ; lv2:name "Out: Speed 3" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 63 ; lv2:symbol "o_spd4" ; lv2:name "Out: Speed 4" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 64 ; lv2:symbol "o_espd1" ; lv2:name "Out: Eff Speed 1" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 65 ; lv2:symbol "o_espd2" ; lv2:name "Out: Eff Speed 2" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 66 ; lv2:symbol "o_espd3" ; lv2:name "Out: Eff Speed 3" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 67 ; lv2:symbol "o_espd4" ; lv2:name "Out: Eff Speed 4" ;
+        lv2:minimum 0 ; lv2:maximum 4 ;
     ] .
 
 # Настройки: LV2-параметры (patch:Set), скрыты со страниц, меняются на вкладке настроек виджета.
@@ -914,3 +966,185 @@
     lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 4 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
+
+# Скорость (этап 5): ручная скорость 16 дорожек, плавная смена темпа, привязка, плавный ход, сброс.
+<urn:audiolooper:looper#tempo_glide>
+    a lv2:Parameter ;
+    lv2:symbol "tempo_glide" ;
+    rdfs:label "Tempo Glide" ;
+    rdfs:range atom:Int ;
+    lv2:default 500 ; lv2:minimum 100 ; lv2:maximum 4000 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd_snap>
+    a lv2:Parameter ;
+    lv2:symbol "spd_snap" ;
+    rdfs:label "Speed Snap" ;
+    rdfs:range atom:Int ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 2 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd_glide>
+    a lv2:Parameter ;
+    lv2:symbol "spd_glide" ;
+    rdfs:label "Speed Glide" ;
+    rdfs:range atom:Int ;
+    lv2:default 150 ; lv2:minimum 0 ; lv2:maximum 2000 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd1>
+    a lv2:Parameter ;
+    lv2:symbol "spd1" ;
+    rdfs:label "Speed 1" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd2>
+    a lv2:Parameter ;
+    lv2:symbol "spd2" ;
+    rdfs:label "Speed 2" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd3>
+    a lv2:Parameter ;
+    lv2:symbol "spd3" ;
+    rdfs:label "Speed 3" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd4>
+    a lv2:Parameter ;
+    lv2:symbol "spd4" ;
+    rdfs:label "Speed 4" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd5>
+    a lv2:Parameter ;
+    lv2:symbol "spd5" ;
+    rdfs:label "Speed 5" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd6>
+    a lv2:Parameter ;
+    lv2:symbol "spd6" ;
+    rdfs:label "Speed 6" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd7>
+    a lv2:Parameter ;
+    lv2:symbol "spd7" ;
+    rdfs:label "Speed 7" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd8>
+    a lv2:Parameter ;
+    lv2:symbol "spd8" ;
+    rdfs:label "Speed 8" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd9>
+    a lv2:Parameter ;
+    lv2:symbol "spd9" ;
+    rdfs:label "Speed 9" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd10>
+    a lv2:Parameter ;
+    lv2:symbol "spd10" ;
+    rdfs:label "Speed 10" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd11>
+    a lv2:Parameter ;
+    lv2:symbol "spd11" ;
+    rdfs:label "Speed 11" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd12>
+    a lv2:Parameter ;
+    lv2:symbol "spd12" ;
+    rdfs:label "Speed 12" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd13>
+    a lv2:Parameter ;
+    lv2:symbol "spd13" ;
+    rdfs:label "Speed 13" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd14>
+    a lv2:Parameter ;
+    lv2:symbol "spd14" ;
+    rdfs:label "Speed 14" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd15>
+    a lv2:Parameter ;
+    lv2:symbol "spd15" ;
+    rdfs:label "Speed 15" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#spd16>
+    a lv2:Parameter ;
+    lv2:symbol "spd16" ;
+    rdfs:label "Speed 16" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.00 ; lv2:minimum 0.25 ; lv2:maximum 2.00 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#sreset>
+    a lv2:Parameter ;
+    lv2:symbol "sreset" ;
+    rdfs:label "Speed Reset" ;
+    rdfs:range atom:Int ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 4 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+

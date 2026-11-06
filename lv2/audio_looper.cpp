@@ -55,6 +55,7 @@ enum Port : uint32_t {
   O_LEN1, O_LEN2, O_LEN3, O_LEN4,
   O_FLAGS, O_POOL, O_PARTS,
   O_PK1, O_PK2, O_PK3, O_PK4, O_MPK_L, O_MPK_R,
+  O_SPD1, O_SPD2, O_SPD3, O_SPD4, O_ESPD1, O_ESPD2, O_ESPD3, O_ESPD4,
   P_COUNT
 };
 
@@ -99,6 +100,11 @@ enum Param {
   PR_MASTER,
   PR_LIMIT,
   PR_TMUTE,  // команда виджета: mute дорожки 1..4 текущего парта; сам возвращается в 0
+  PR_TGLIDE,                    // плавная смена темпа, мс
+  PR_SSNAP,                     // привязка скорости: 0 свободно, 1 полутоны, 2 октавы
+  PR_SGLIDE,                    // плавный ход скорости, мс
+  PR_SPD0,                      // spd1..spd16: ручная скорость дорожки
+  PR_SRESET = PR_SPD0 + kTracks,  // команда виджета: сброс скорости дорожки 1..4 текущего парта
   PR_COUNT
 };
 struct ParamDef {
@@ -130,6 +136,14 @@ void init_params() {
   kParams[PR_MASTER] = ParamDef{"mst_db", 0.0f, kMinDb, 6.0f, true};  // не "master": так называется порт
   kParams[PR_LIMIT] = ParamDef{"limiter", 1.0f, 0.0f, 1.0f, false};
   kParams[PR_TMUTE] = ParamDef{"tmute", 0.0f, 0.0f, 4.0f, false};
+  kParams[PR_TGLIDE] = ParamDef{"tempo_glide", 500.0f, 100.0f, 4000.0f, false};
+  kParams[PR_SSNAP] = ParamDef{"spd_snap", 0.0f, 0.0f, 2.0f, false};
+  kParams[PR_SGLIDE] = ParamDef{"spd_glide", 150.0f, 0.0f, 2000.0f, false};
+  for (int t = 0; t < kTracks; ++t) {
+    kParams[PR_SPD0 + t] = ParamDef{{}, 1.0f, kMinSpeed, kMaxSpeed, true};
+    std::snprintf(kParams[PR_SPD0 + t].sym, 16, "spd%d", t + 1);
+  }
+  kParams[PR_SRESET] = ParamDef{"sreset", 0.0f, 0.0f, 4.0f, false};
 }
 constexpr uint32_t kReportPerRun = 4;  // ответов на patch:Get за один run()
 
@@ -168,7 +182,7 @@ struct Plugin {
     bool init = false, caught = false;
     float last = 0.0f, applied = 0.0f;
     int target = -1;
-  } c_level, c_pan, c_master;
+  } c_level, c_pan, c_master, c_speed;
 
   float in(uint32_t p) const { return ports[p] ? *static_cast<const float*>(ports[p]) : 0.0f; }
   void out(uint32_t p, float v) {
@@ -186,6 +200,9 @@ struct Plugin {
     s.reverse_ms = (float)vals[PR_REV];
     s.mute_q = (int)vals[PR_MUTE_Q];
     s.part_q = (int)vals[PR_PART_Q];
+    s.tempo_glide_ms = vals[PR_TGLIDE];
+    s.spd_snap = (int)vals[PR_SSNAP];
+    s.spd_glide_ms = vals[PR_SGLIDE];
     looper->set_settings(s);
   }
 
@@ -204,8 +221,11 @@ struct Plugin {
       looper->set_master_db(vals[PR_MASTER]);
     } else if (i == PR_LIMIT) {
       looper->set_limiter(vals[PR_LIMIT] >= 0.5f);
+    } else if (i >= PR_SPD0 && i < PR_SPD0 + kTracks) {
+      looper->set_speed(i - PR_SPD0, vals[i]);
     }
   }
+  static bool is_setting(int i) { return i < PR_LEV0 || i == PR_TGLIDE || i == PR_SSNAP || i == PR_SGLIDE; }
   void apply_all() {
     apply_settings();
     for (int i = PR_LEV0; i < PR_COUNT; ++i) apply_mix_param(i);
@@ -227,6 +247,7 @@ struct Plugin {
     upd(PR_DRY, looper->dry_db());
     upd(PR_MASTER, looper->master_db());
     upd(PR_LIMIT, looper->limiter() ? 1.0f : 0.0f);
+    for (int t = 0; t < kTracks; ++t) upd(PR_SPD0 + t, looper->speed(t));
   }
 };
 
@@ -299,6 +320,10 @@ void handle_knobs(Plugin* pl) {
     m.pan = pl->c_pan.applied / 100.0f;
     lp->set_mix(k, m);
   }
+  // скорость: захват в октавах (ручка логарифмическая 0,25..2)
+  const float sp = std::fmax(kMinSpeed, pl->in(P_SPEED));
+  if (catch_knob(pl->c_speed, std::log2(sp), k, std::log2(lp->speed(k)), 0.03f))
+    lp->set_speed(k, std::exp2(pl->c_speed.applied));
   if (catch_knob(pl->c_master, pl->in(P_MASTER), 0, db_to_pos(lp->master_db()), 1.0f))
     lp->set_master_db(pos_to_db(pl->c_master.applied));
 }
@@ -333,7 +358,13 @@ void handle_patch_set(Plugin* pl, const LV2_Atom_Object* obj) {
     pl->dirty[i] = true;
     return;
   }
-  if (i < PR_LEV0) pl->apply_settings();
+  if (i == PR_SRESET) {
+    if (pl->vals[i] >= 1.0f) pl->looper->speed_reset(pl->looper->part() * kSlots + (int)pl->vals[i] - 1);
+    pl->vals[i] = 0.0f;
+    pl->dirty[i] = true;
+    return;
+  }
+  if (Plugin::is_setting(i)) pl->apply_settings();
   else pl->apply_mix_param(i);
 }
 
@@ -595,6 +626,11 @@ void run(LV2_Handle h, uint32_t n) {
   for (int i = 0; i < kSlots; ++i) pl->out(O_PK1 + i, lp->peak(i));
   pl->out(O_MPK_L, lp->master_peak(0));
   pl->out(O_MPK_R, lp->master_peak(1));
+  for (int i = 0; i < kSlots; ++i) {
+    const TrackView v = lp->view(i);
+    pl->out(O_SPD1 + i, v.speed);
+    pl->out(O_ESPD1 + i, v.espeed);
+  }
 }
 
 void cleanup(LV2_Handle h) {

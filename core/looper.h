@@ -29,7 +29,12 @@ struct Settings {
   float reverse_ms = 50.0f;    // время разворота
   int mute_q = 2;             // 0 сразу, 1 доля, 2 такт, 3 конец цикла
   int part_q = 3;             // смена парта: 0 сразу, 1 доля, 2 такт, 3 конец цикла (самого длинного лупа)
+  float tempo_glide_ms = 500.0f;  // плавная смена темпа (следование темпу)
+  int spd_snap = 0;               // привязка ручной скорости: 0 свободно, 1 полутоны, 2 октавы
+  float spd_glide_ms = 150.0f;    // плавный ход ручной скорости
 };
+
+constexpr float kMinSpeed = 0.25f, kMaxSpeed = 2.0f;  // ручная скорость дорожки, как у ленты
 
 // Микшер дорожки. Режим «Стерео»: панорама как баланс с постоянной мощностью.
 // «Раздельно» (L и R — разные инструменты): в центре L слева, R справа, ничего не смешивается;
@@ -56,6 +61,8 @@ struct TrackView {
   uint8_t state;     // 0 пусто, 1 ждёт такта, 2 запись, 3 играет, 4 овердаб
   bool muted, reversed, can_undo, can_redo, stopped, locked;
   float pos;         // 0..1 доля цикла
+  float speed;       // ручная скорость сейчас (с плавным ходом)
+  float espeed;      // итоговая: ручная × следование темпу × автоподстройка
   float len_s;       // длина цикла, с
   uint32_t layers;   // слоёв в undo
 };
@@ -116,6 +123,10 @@ class Looper {
   // (сброс удержанием Reset, Lock-копия) — обёртка сообщает новые значения хосту
   void set_mix(int k, const Mix& m) { mix_[k] = m; }
   void mute_slot(int slot);  // mute дорожки текущего парта (кнопка M в виджете Mixer)
+  // ручная скорость дорожки k (0..15): цель, к ней плавный ход; сброс — к 1× и в фазу с тактом
+  void set_speed(int k, float s) { tr_[k].mspd = s < kMinSpeed ? kMinSpeed : (s > kMaxSpeed ? kMaxSpeed : s); }
+  float speed(int k) const { return tr_[k].mspd; }
+  void speed_reset(int k);
   const Mix& mix(int k) const { return mix_[k]; }
   void set_master_db(float db) { master_db_ = db; }
   float master_db() const { return master_db_; }
@@ -159,6 +170,16 @@ class Looper {
     bool synced = false;
     bool rec_q = false;
     double b0 = 0.0, loop_beats = 0.0, rec_bpf = 0.0;
+    // скорость: ручная цель, ручная сейчас (плавный ход), итоговая на этот блок
+    float mspd = 1.0f;
+    double mcur = 1.0;
+    double spd = 1.0;
+    bool phase_reset = false;  // сброс скорости: когда дойдёт до 1×, встать в фазу с тактом
+    bool phase_wait = false;   // ждём границы (MUTE AT)
+    // овердаб с пересчётом под скорость: прошлая позиция головки и прошлый вход
+    double wprev = 0.0;
+    float wl_prev = 0.0f, wr_prev = 0.0f;
+    bool wfirst = true;
     int64_t rev_wait = -1;   // Quantize: кадров до начала разворота (-1 = не ждём)
     double rev_n = 0.0;      // длина разворота, кадров
     // запись основы
@@ -239,6 +260,11 @@ class Looper {
   void write_add(int32_t b, uint64_t p, float l, float r);
   void seam_write(Track& t, float l, float r);
   void dub_write(int ti, uint64_t p, float l, float r);
+  float dub_env(Track& t);
+  bool dub_put(int ti, uint64_t p, float l, float r);
+  void dub_resampled(int ti, float il, float ir, double step);
+  void update_speeds(uint32_t n);
+  float snap_speed(float s) const;
   void on_grid(bool beat, bool bar);
   bool has_content() const;
   uint64_t bar_frames() const;
@@ -251,6 +277,7 @@ class Looper {
   int active_ = 0;
   // сетка
   double beats_ = 0.0, bpf_ = 0.0;  // сетка: при стоящем транспорте лупер считает сам
+  double bpf_f_ = 0.0;              // темп после фильтра (следование темпу без вибрато)
   int bpb_ = 4;
   bool rolling_ = false;
   bool time_seen_ = false;

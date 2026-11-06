@@ -255,6 +255,7 @@ void Looper::start_dub(int ti) {
   t.layer = b;
   t.dub_t = 0;
   t.dub_end = -1;
+  t.wfirst = true;
   t.undo_after_dub = t.reset_after_dub = false;
   t.st = TState::Dub;
   if (peaks_ && in_cur(ti)) {  // волна нового слоя растёт вживую
@@ -395,6 +396,9 @@ void Looper::reset_all_now() {
     t.locked = false;
     t.lock_to = -1;
     t.lock_ready = false;
+    t.mspd = 1.0f;
+    t.mcur = t.spd = 1.0;
+    t.phase_reset = t.phase_wait = false;
     t.dub_end = -1;
     t.undo_after_dub = t.reset_after_dub = false;
     t.seam_t = kNoSeam;
@@ -763,24 +767,75 @@ void Looper::seam_write(Track& t, float l, float r) {
   write_add(t.sum, k % t.len, l * fo, r * fo);
 }
 
-void Looper::dub_write(int ti, uint64_t p, float l, float r) {
-  Track& t = tr_[ti];
+// Огибающая овердаба на этот кадр входа (вход и выход по 10 мс).
+float Looper::dub_env(Track& t) {
   float env = t.dub_t < xf_ ? (float)t.dub_t / (float)xf_ : 1.0f;
   if (t.dub_end >= 0) {
     float e2 = 1.0f - (float)t.dub_end / (float)xf_;
     if (e2 < env) env = e2;
   }
   ++t.dub_t;
+  return env;
+}
+
+// Прибавить к слою и сумме в позиции p. false — кончилась память.
+bool Looper::dub_put(int ti, uint64_t p, float l, float r) {
+  Track& t = tr_[ti];
   Chunk* c = pool_.ensure(t.layer, (uint32_t)(p >> kChunkShift), true);
   if (!c && reserve(1, ti)) c = pool_.ensure(t.layer, (uint32_t)(p >> kChunkShift), true);
-  if (!c) {  // память кончилась: овердаб закрывается
-    end_dub(ti);
-  } else {
-    c->l[p & kChunkMask] += l * env;
-    c->r[p & kChunkMask] += r * env;
-    write_add(t.sum, p, l * env, r * env);
-    if (peaks_ && in_cur(ti)) live_peaks(ti, p);
+  if (!c) return false;
+  c->l[p & kChunkMask] += l;
+  c->r[p & kChunkMask] += r;
+  write_add(t.sum, p, l, r);
+  if (peaks_ && in_cur(ti)) live_peaks(ti, p);
+  return true;
+}
+
+void Looper::dub_write(int ti, uint64_t p, float l, float r) {
+  Track& t = tr_[ti];
+  const float env = dub_env(t);
+  if (!dub_put(ti, p, l * env, r * env)) end_dub(ti);  // память кончилась: овердаб закрывается
+  t.wprev = (double)p;
+  t.wl_prev = l;
+  t.wr_prev = r;
+  t.wfirst = false;
+  if (t.dub_end >= 0 && ++t.dub_end >= (int64_t)xf_) finish_dub(ti);
+}
+
+// Овердаб на скорости не 1× (как на ленте): головка прошла от прошлой позиции до текущей,
+// в каждую пройденную позицию лупа пишем вход, интерполированный между прошлым и текущим кадром.
+void Looper::dub_resampled(int ti, float il, float ir, double step) {
+  Track& t = tr_[ti];
+  const double w1 = t.pos;
+  if (step == 1.0 && w1 == std::floor(w1)) {  // ровно 1×: как раньше, кадр в кадр
+    dub_write(ti, wrap_index((int64_t)w1, t.len), il, ir);
+    return;
   }
+  const double L = (double)t.len;
+  double d = t.wfirst ? step : w1 - t.wprev;  // сколько прошла головка за кадр
+  if (d > L / 2) d -= L;
+  else if (d < -L / 2) d += L;
+  const double w0 = w1 - d;
+  const float env = dub_env(t);
+  bool ok = true;
+  if (d > 0) {
+    for (int64_t n = (int64_t)std::floor(w0) + 1; n <= (int64_t)std::floor(w1) && ok; ++n) {
+      const float a = (float)(((double)n - w0) / d);
+      ok = dub_put(ti, wrap_index(n, t.len), (t.wl_prev + (il - t.wl_prev) * a) * env,
+                   (t.wr_prev + (ir - t.wr_prev) * a) * env);
+    }
+  } else if (d < 0) {
+    for (int64_t n = (int64_t)std::ceil(w1); n < (int64_t)std::ceil(w0) && ok; ++n) {
+      const float a = (float)((w0 - (double)n) / -d);
+      ok = dub_put(ti, wrap_index(n, t.len), (t.wl_prev + (il - t.wl_prev) * a) * env,
+                   (t.wr_prev + (ir - t.wr_prev) * a) * env);
+    }
+  }
+  if (!ok) end_dub(ti);
+  t.wprev = w1;
+  t.wl_prev = il;
+  t.wr_prev = ir;
+  t.wfirst = false;
   if (t.dub_end >= 0 && ++t.dub_end >= (int64_t)xf_) finish_dub(ti);
 }
 
@@ -808,6 +863,10 @@ void Looper::on_grid(bool beat, bool bar) {
     Track& t = tr_[ti];
     if (t.st == TState::Armed && bar) start_rec(ti);
     if (t.mute_pending && ((set_.mute_q == 1 && beat) || (set_.mute_q == 2 && bar))) apply_mute(ti);
+    if (t.phase_wait && ((set_.mute_q == 1 && beat) || (set_.mute_q >= 2 && bar))) {
+      t.phase_wait = false;
+      resync(ti);
+    }
   }
   if (ps_pending_ && ((set_.mute_q == 1 && beat) || (set_.mute_q >= 2 && bar))) {
     apply_playstop(ps_pending_ == 1);
@@ -889,11 +948,12 @@ void Looper::track_sample(int ti, uint32_t i, float il, float ir, float& ol, flo
   const float a = std::fmax(std::fabs(yl), std::fabs(yr));
   if (a > bmax_[ti]) bmax_[ti] = a;
 
+  // шаг головки за кадр: направление (разворот reverse) × скорость
+  const double step = t.rate * t.spd;
   // запись: хвост на стыке и овердаб
   if (playing) {
     if (t.seam_t < xf_) seam_write(t, il, ir);
-    if (t.st == TState::Dub && t.layer >= 0)
-      dub_write(ti, wrap_index((int64_t)std::llround(t.pos), t.len), il, ir);
+    if (t.st == TState::Dub && t.layer >= 0) dub_resampled(ti, il, ir, step);
   }
 
   // движение: reverse разворачивается как лента (скорость плавно проходит через 0)
@@ -906,18 +966,18 @@ void Looper::track_sample(int ti, uint32_t i, float il, float ir, float& ol, flo
     if ((t.rate_step > 0 && t.rate >= 1.0) || (t.rate_step < 0 && t.rate <= -1.0)) {
       t.rate = t.rate_step > 0 ? 1.0 : -1.0;
       t.rate_step = 0.0;
-      t.pos = std::round(t.pos);  // дальше снова прямое чтение
+      if (t.spd == 1.0) t.pos = std::round(t.pos);  // на 1× дальше снова прямое чтение
     }
   }
   if (t.xf_len > 0 && t.xf_from >= 0) {
     const double XL = (double)pool_.buf(t.xf_from).len;
-    t.xpos += t.rate;
+    t.xpos += step;
     if (XL > 0) {
       if (t.xpos >= XL) t.xpos -= XL;
       else if (t.xpos < 0.0) t.xpos += XL;
     }
   }
-  t.pos += t.rate;
+  t.pos += step;
   bool wrapped = false;
   if (t.pos >= (double)L) {
     t.pos -= (double)L;
@@ -1014,6 +1074,74 @@ void Looper::apply_playstop(bool stop) {
   }
 }
 
+// ---------------------------------------------------------------- скорость и следование темпу
+
+float Looper::snap_speed(float s) const {
+  if (set_.spd_snap == 0) return s;
+  const double st = 12.0 * std::log2((double)s);
+  const double q = set_.spd_snap == 2 ? 12.0 : 1.0;  // октавы или полутоны
+  return (float)std::exp2(std::round(st / q) * q / 12.0);
+}
+
+void Looper::speed_reset(int k) {
+  Track& t = tr_[k];
+  t.mspd = 1.0f;
+  t.phase_reset = true;  // доедет до 1× — встанет в фазу с тактом
+}
+
+// Раз в блок: темп через фильтр, плавный ход ручной скорости, итоговая скорость дорожек.
+// В Quantize: следование темпу (темп сейчас / темп при записи) и фазовая автоподстройка:
+// дорожка на ручной 1× чуть подправляет скорость (до ±2 %), чтобы стоять в фазе с позицией Zynthian.
+void Looper::update_speeds(uint32_t n) {
+  if (bpf_f_ <= 0.0) bpf_f_ = bpf_;
+  const double tg = std::fmax(1.0, (double)set_.tempo_glide_ms) / 1000.0 / 4.0 * sr_;
+  bpf_f_ += (bpf_ - bpf_f_) * (1.0 - std::exp(-(double)n / tg));
+  const double sg = (double)set_.spd_glide_ms / 1000.0 / 4.0 * sr_;
+  const double ks = sg < 1.0 ? 1.0 : 1.0 - std::exp(-(double)n / sg);
+  for (int k = 0; k < kTracks; ++k) {
+    Track& t = tr_[k];
+    // ручная: плавный ход в логарифмах (равномерно по высоте)
+    const double target = (double)snap_speed(t.mspd);
+    if (t.mcur != target) {
+      double lc = std::log2(t.mcur), lt = std::log2(target);
+      lc += (lt - lc) * ks;
+      t.mcur = std::fabs(lt - lc) < 1e-5 ? target : std::exp2(lc);
+    }
+    double sp = t.mcur;
+    if (t.rec_q && set_.quantize && t.rec_bpf > 0.0 && bpf_f_ > 0.0) sp *= bpf_f_ / t.rec_bpf;
+    // фазовая автоподстройка
+    const bool can_lock = t.synced && t.len && t.loop_beats > 0 && t.dir > 0 && t.rate_step == 0.0 &&
+                          t.mcur == 1.0 && set_.quantize && (t.st == TState::Play || t.st == TState::Dub) &&
+                          in_cur(k) && !t.stopped && !t.ustop && t.xf_len == 0;
+    if (can_lock) {
+      double ph = std::fmod((beats_ - t.b0) / t.loop_beats, 1.0);
+      if (ph < 0) ph += 1.0;
+      const double L = (double)t.len;
+      double err = t.pos - ph * L;
+      if (err > L / 2) err -= L;
+      if (err < -L / 2) err += L;
+      if (std::fabs(err) > 0.1 * sr_) {
+        resync(k);  // далеко (больше 100 мс): перескок через кроссфейд
+      } else {
+        double corr = -err / (0.25 * sr_);
+        if (corr > 0.02) corr = 0.02;
+        if (corr < -0.02) corr = -0.02;
+        if (std::fabs(err) < 0.25) corr = 0.0;
+        sp *= 1.0 + corr;
+      }
+    }
+    t.spd = sp;
+    // после сброса скорости — в фазу с тактом
+    if (t.phase_reset && t.mcur == 1.0) {
+      t.phase_reset = false;
+      if (t.synced) {
+        if (!set_.quantize || set_.mute_q == 0) resync(k);
+        else t.phase_wait = true;
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------- парты и Lock
 
 bool Looper::part_has_content(int p) const {
@@ -1089,6 +1217,9 @@ void Looper::clone_into(int from, int to) {
   n.ustop = o.ustop;
   n.sgain = o.sgain;
   n.locked = true;
+  n.mspd = o.mspd;
+  n.mcur = o.mcur;
+  n.spd = o.spd;
   mix_[to] = mix_[from];
   for (int j = 0; j < 4; ++j) mcur_[to][j] = mcur_[from][j];
   ++mix_epoch_;
@@ -1201,6 +1332,7 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
   const float mgs = n ? (master_g_ - mg0) / (float)n : 0.0f;
   const float dgs = n ? (dry_g_ - dg0) / (float)n : 0.0f;
   const float lim_rel = (float)std::exp(-1.0 / (kLimRelS * sr_));
+  update_speeds(n);
   float mbl = 0.0f, mbr = 0.0f;
   // «конец цикла» для смены парта — по самой длинной играющей дорожке текущего парта
   master_ = -1;
@@ -1292,6 +1424,8 @@ TrackView Looper::view(int i) const {
     case TState::Play: v.state = 3; break;
     case TState::Dub: v.state = 4; break;
   }
+  v.speed = (float)t.mcur;
+  v.espeed = (float)t.spd;
   v.muted = t.muted;
   v.stopped = t.stopped || t.ustop;
   v.locked = t.locked;
