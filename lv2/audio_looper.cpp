@@ -404,6 +404,7 @@ void run(LV2_Handle h, uint32_t n) {
     if (v.reversed) flags |= 1u << (4 + i);
     if (v.can_undo) flags |= 1u << (8 + i);
     if (v.can_redo) flags |= 1u << (12 + i);
+    if (v.stopped) flags |= 1u << (16 + i);
   }
   pl->out(O_FLAGS, (float)flags);
   pl->out(O_POOL, lp->pool_fill());

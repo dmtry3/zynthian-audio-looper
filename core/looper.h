@@ -39,7 +39,7 @@ enum class TState : uint8_t { Empty, Armed, Rec, Closing, Play, Dub };
 // Для выходных портов и виджета.
 struct TrackView {
   uint8_t state;     // 0 пусто, 1 ждёт такта, 2 запись, 3 играет, 4 овердаб
-  bool muted, reversed, can_undo, can_redo;
+  bool muted, reversed, can_undo, can_redo, stopped;
   float pos;         // 0..1 доля цикла
   float len_s;       // длина цикла, с
   uint32_t layers;   // слоёв в undo
@@ -129,6 +129,8 @@ class Looper {
     bool reset_after_dub = false;
     // mute
     bool muted = false, mute_pending = false;
+    bool stopped = false;    // транспорт Zynthian остановлен: дорожка затихла и ждёт пуска
+    float sgain = 1.0f;      // огибающая остановки по транспорту
     float gain = 1.0f;
     bool busy = false;       // рабочий поток считает undo/redo этой дорожки
   };
@@ -149,6 +151,8 @@ class Looper {
   void apply_mute(int ti);
   void start_reverse(Track& t, double n);
   void resync(int ti);
+  void transport_stop();
+  void transport_start();
   void leave_track(int ti);
 
   // undo/redo и память

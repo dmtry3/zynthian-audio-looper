@@ -276,6 +276,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                 "len": float(m.get("o_len%d" % (i + 1), 0.0)),
                 "muted": bool(flags >> i & 1),
                 "reversed": bool(flags >> (4 + i) & 1),
+                "stopped": bool(flags >> (16 + i) & 1),
             })
         if not 0 <= st["act"] < len(ACTIONS):
             st["act"] = 0
@@ -368,6 +369,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             color = track_color(state, tr["muted"], tr["reversed"], active)
             if state == ST_ARMED:
                 color = RED if blink else EMPTY
+            elif tr["stopped"]:
+                color = mix(color, BG, 0.55)  # транспорт стоит: дорожка затихла и ждёт пуска
             has_loop = state in (ST_PLAY, ST_DUB) and tr["len"] > 0
             # круг позиции с номером, под ним скорость
             pie_r = row_h * 0.3

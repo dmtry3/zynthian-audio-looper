@@ -481,6 +481,43 @@ static void test_transport_restart_resync() {
   s.wav("transport_restart");
 }
 
+// Транспорт остановили: лупы плавно затихают. Пустили: входят обратно в фазе, без щелчка.
+static void test_transport_stop_start() {
+  const uint64_t BAR = 96000;
+  const double bpf = 120.0 / 60.0 / SR;
+  Sim s(64, true);
+  s.ti.rolling = true;
+  s.set.length[0] = 1;
+  s.apply();
+  s.in_l = sine(180.0, 0.4f);
+  s.cmd(Cmd::Rec);
+  s.run(BAR * 2 + BLOCK * 8);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run((uint64_t)(BAR * 1.3));
+  const double frozen = s.beats_now();
+  s.ti.rolling = false;
+  s.beats_at = [frozen](uint64_t) { return frozen; };
+  const uint64_t t_stop = s.t;
+  s.run(BAR / 2);
+  CHECK(s.v().stopped && s.v().state == 3);
+  CHECK(rms(s.slice(t_stop, 2400)) > 0.05f);           // затухает не сразу (200 мс)
+  CHECK(rms(s.slice(s.t - 9600, 9600)) < 1e-6f);       // потом тишина
+  s.cmd(Cmd::Rec);                                      // Rec на остановленной: молча ничего
+  CHECK(s.v().state == 3);
+  const uint64_t t_start = s.t;
+  s.ti.rolling = true;
+  s.beats_at = [t_start, bpf](uint64_t t) { return (double)(t - t_start) * bpf; };
+  s.run(BAR / 2);
+  CHECK(!s.v().stopped);
+  CHECK(rms(s.slice(s.t - 9600, 9600)) > 0.1f);        // снова играет
+  const uint64_t want = (s.t - t_start) % BAR;
+  const uint64_t got = (uint64_t)std::llround(s.v().pos * (double)BAR) % BAR;
+  int64_t diff = (int64_t)got - (int64_t)want;
+  CHECK(diff >= -2 && diff <= 2);
+  CHECK(s.max_step(BAR * 2, s.t) < 0.03f);
+  s.wav("transport_stop_start");
+}
+
 int main() {
   test_record_play();
   test_overdubs_undo();
@@ -488,6 +525,7 @@ int main() {
   test_reverse();
   test_reverse_quantized();
   test_transport_restart_resync();
+  test_transport_stop_start();
   test_quantize();
   test_rop();
   test_reset();

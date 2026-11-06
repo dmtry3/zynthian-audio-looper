@@ -258,7 +258,7 @@
     ] , [
         a lv2:OutputPort , lv2:ControlPort ;
         lv2:index 51 ; lv2:symbol "o_flags" ; lv2:name "Out: Flags" ;
-        lv2:minimum 0 ; lv2:maximum 65535 ;
+        lv2:minimum 0 ; lv2:maximum 1048575 ;
     ] , [
         a lv2:OutputPort , lv2:ControlPort ;
         lv2:index 52 ; lv2:symbol "o_pool" ; lv2:name "Out: Pool" ;
