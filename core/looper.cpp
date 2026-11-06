@@ -46,10 +46,25 @@ void Looper::command(Cmd c) {
       break;
     case Cmd::Reverse: {
       if ((t.st != TState::Play && t.st != TState::Dub) || t.len == 0) break;
-      t.dir = -t.dir;
+      if (t.rev_wait >= 0) {  // повторное нажатие до такта отменяет разворот
+        t.rev_wait = -1;
+        break;
+      }
       double n = set_.reverse_ms * sr_ / 1000.0;
       if (n < sr_ * 0.005) n = sr_ * 0.005;  // не короче 5 мс
-      t.rate_step = 2.0 / n * t.dir;
+      if (!set_.quantize) {
+        start_reverse(t, n);
+        break;
+      }
+      // Quantize: такт доигрывается. Лента останавливается ровно на тактовой черте:
+      // разворот начинается за n/2 до неё, и после него позиция та же, что при мгновенном
+      // развороте на черте (вперёд уходим на n/4 и столько же возвращаемся).
+      const double bf = bpb_ / (bpf_ > 1e-12 ? bpf_ : 2.0 / sr_);
+      const double next_bar = (std::floor(beats_ / bpb_) + 1.0) * bpb_;
+      double start = (next_bar - beats_) / (bpf_ > 1e-12 ? bpf_ : 2.0 / sr_) - n / 2.0;
+      if (start < 0.0) start += bf;  // до черты меньше половины разворота: следующий такт
+      t.rev_wait = (int64_t)std::llround(start);
+      t.rev_n = n;
       break;
     }
     case Cmd::TrackNext:
@@ -295,11 +310,17 @@ void Looper::reset_all_now() {
     t.dir = 1;
     t.rate = 1.0;
     t.rate_step = 0.0;
+    t.rev_wait = -1;
     t.dub_end = -1;
     t.undo_after_dub = t.reset_after_dub = false;
     t.seam_t = kNoSeam;
   }
   anchor_ = 0.0;
+}
+
+void Looper::start_reverse(Track& t, double n) {
+  t.dir = -t.dir;
+  t.rate_step = 2.0 / n * t.dir;
 }
 
 void Looper::apply_mute(int ti) {
@@ -374,6 +395,7 @@ void Looper::swap_to(int ti, int32_t new_sum, bool free_old) {
   t.xf_len = xf_;
   t.sum = new_sum;
   if (new_sum < 0) {
+    t.rev_wait = -1;
     t.st = TState::Empty;
     t.len = 0;
     t.muted = t.mute_pending = false;
@@ -642,6 +664,7 @@ void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
   uint64_t L = t.len;
   if (L == 0 && t.xf_from >= 0) L = pool_.buf(t.xf_from).len;
   if (L == 0) return;
+  if (t.rev_wait >= 0 && t.rev_wait-- == 0) start_reverse(t, t.rev_n);
   if (t.rate_step != 0.0) {
     t.rate += t.rate_step;
     if ((t.rate_step > 0 && t.rate >= 1.0) || (t.rate_step < 0 && t.rate <= -1.0)) {

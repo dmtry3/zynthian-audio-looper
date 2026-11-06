@@ -109,6 +109,8 @@ class Looper {
     double rate = 1.0;
     int dir = 1;
     double rate_step = 0.0;
+    int64_t rev_wait = -1;   // Quantize: кадров до начала разворота (-1 = не ждём)
+    double rev_n = 0.0;      // длина разворота, кадров
     // запись основы
     int32_t rec = -1;
     uint64_t rec_frames = 0, rec_target = 0;
@@ -139,6 +141,7 @@ class Looper {
   void end_dub(int ti);
   void finish_dub(int ti);
   void apply_mute(int ti);
+  void start_reverse(Track& t, double n);
   void leave_track(int ti);
 
   // undo/redo и память

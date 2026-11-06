@@ -407,11 +407,50 @@ static void test_pool_full() {
   CHECK(s.max_step(0, s.t) < 0.05f);
 }
 
+// Quantize: reverse доигрывает такт, лента останавливается ровно на тактовой черте,
+// после разворота позиция как при мгновенном развороте на черте (лупы остаются в долю).
+static void test_reverse_quantized() {
+  const uint64_t BAR = 96000;  // 120 уд/мин, 4/4
+  Sim s(64, true);
+  s.ti.rolling = true;
+  s.set.length[0] = 1;
+  s.apply();
+  s.in_l = sine(180.0, 0.4f);
+  s.cmd(Cmd::Rec);
+  s.run(BAR * 2 + BLOCK);  // ждём такт, пишем 1 такт: цикл начинается на черте
+  CHECK(s.v().state == 3);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(BAR / 3);  // середина такта
+  const uint64_t L = BAR;
+  const uint64_t next_bar = ((s.t / BAR) + 1) * BAR;
+  s.cmd(Cmd::Reverse);
+  const uint64_t n = 2400;  // 50 мс
+  s.run(next_bar - n / 2 - s.t - BLOCK);  // до начала разворота — ещё вперёд
+  CHECK(!s.v().reversed);
+  s.run(BLOCK * 2);
+  CHECK(s.v().reversed);  // разворот начался за n/2 до черты
+  s.run(next_bar + n - s.t);  // разворот закончился
+  // идеальная позиция: на черте 0 (цикл = такт), дальше назад
+  const uint64_t want = (L - (s.t - next_bar) % L) % L;
+  const uint64_t got = (uint64_t)std::llround(s.v().pos * (double)L) % L;
+  int64_t diff = (int64_t)got - (int64_t)want;
+  if (diff > (int64_t)L / 2) diff -= L;
+  if (diff < -(int64_t)L / 2) diff += L;
+  CHECK(diff >= -2 && diff <= 2);
+  CHECK(s.max_step(BAR * 2, s.t) < 0.03f);
+  // повторное нажатие до черты отменяет разворот
+  s.cmd(Cmd::Reverse);
+  s.cmd(Cmd::Reverse);
+  s.run(BAR * 2);
+  CHECK(s.v().reversed);
+}
+
 int main() {
   test_record_play();
   test_overdubs_undo();
   test_mute();
   test_reverse();
+  test_reverse_quantized();
   test_quantize();
   test_rop();
   test_reset();
