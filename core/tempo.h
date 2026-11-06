@@ -20,8 +20,14 @@ class TempoClock {
  public:
   void set_sample_rate(double sr) { sr_ = sr > 0 ? sr : 48000.0; }
 
+  // Сообщение time:Position от Zynthian (считается в messages()).
   void on_position(const PositionMsg& m) {
     ++messages_;
+    apply_external(m);
+  }
+
+  // То же без счёта: для запасного пути по MIDI-клоку.
+  void apply_external(const PositionMsg& m) {
     if (m.has_bpm && m.bpm >= 20.0 && m.bpm <= 400.0) bpm_ = m.bpm;
     if (m.has_bpb) {
       int v = (int)std::lround(m.bpb);
