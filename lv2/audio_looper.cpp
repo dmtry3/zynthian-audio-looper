@@ -252,6 +252,21 @@ void set_param(Plugin* pl, int i, double v) {
   pl->vals[i] = x;
 }
 
+// Ручки Level и Master: положение 0..100 со шкалой фейдера (как на экране Mixer):
+// 75 = 0 дБ, выше — до +6 дБ, ниже — плавно к −∞; около 0 дБ шаг очень мелкий.
+float pos_to_db(float pos) {
+  const float f = std::fmin(1.0f, std::fmax(0.0f, pos / 100.0f));
+  if (f >= 0.75f) return (f - 0.75f) / 0.25f * 6.0f;
+  if (f <= 0.01f) return kMinDb;
+  const float k = 1.0f - f / 0.75f;
+  return kMinDb * k * k;
+}
+float db_to_pos(float db) {
+  if (db <= kMinDb) return 0.0f;
+  if (db >= 0.0f) return 100.0f * (0.75f + 0.25f * std::fmin(db, 6.0f) / 6.0f);
+  return 100.0f * 0.75f * (1.0f - std::sqrt(db / kMinDb));
+}
+
 // Ручка страницы 5 с захватом: cur — текущее значение цели, tol — допуск «прошли через него».
 // Возвращает true и новое значение, когда ручка ведёт цель.
 bool catch_knob(Plugin::Catch& c, float v, int target, float cur, float tol) {
@@ -276,15 +291,16 @@ void handle_knobs(Plugin* pl) {
   Looper* lp = pl->looper;
   const int k = lp->active_index();
   Mix m = lp->mix(k);
-  if (catch_knob(pl->c_level, pl->in(P_LEVEL), k, m.level_db, 0.5f)) {
-    m.level_db = pl->c_level.applied;
+  if (catch_knob(pl->c_level, pl->in(P_LEVEL), k, db_to_pos(m.level_db), 1.0f)) {
+    m.level_db = pos_to_db(pl->c_level.applied);
     lp->set_mix(k, m);
   }
   if (catch_knob(pl->c_pan, pl->in(P_PAN), k, m.pan * 100.0f, 2.0f)) {
     m.pan = pl->c_pan.applied / 100.0f;
     lp->set_mix(k, m);
   }
-  if (catch_knob(pl->c_master, pl->in(P_MASTER), 0, lp->master_db(), 0.5f)) lp->set_master_db(pl->c_master.applied);
+  if (catch_knob(pl->c_master, pl->in(P_MASTER), 0, db_to_pos(lp->master_db()), 1.0f))
+    lp->set_master_db(pos_to_db(pl->c_master.applied));
 }
 
 void handle_position(Plugin* pl, const LV2_Atom_Object* obj) {

@@ -1,5 +1,6 @@
 // Тесты LV2-обёртки без хоста: ручки страницы 5 с захватом (catch).
 #include <cstdio>
+#include <initializer_list>
 
 #include "../lv2/audio_looper.cpp"
 
@@ -30,6 +31,19 @@ int main() {
   // уровень изменили не педалью (виджет: −12) — педаль снова ждёт захвата
   CHECK(!catch_knob(c, -2.0f, 1, -12.0f, 0.5f));
   CHECK(catch_knob(c, -12.2f, 1, -12.0f, 0.5f));
+  // шкала ручек Level и Master: 75 = 0 дБ, 100 = +6, 0 = −∞, около 0 дБ мелко
+  CHECK(std::fabs(pos_to_db(75.0f)) < 1e-6f && std::fabs(pos_to_db(100.0f) - 6.0f) < 1e-5f);
+  CHECK(pos_to_db(0.0f) == kMinDb);
+  bool mono = true;
+  for (int i = 1; i <= 127; ++i)
+    if (pos_to_db(i * 100.0f / 127.0f) < pos_to_db((i - 1) * 100.0f / 127.0f)) mono = false;
+  CHECK(mono);
+  // шаг MIDI (1/127) около 0 дБ: снизу меньше 0,1 дБ, сверху около 0,2 дБ
+  const float step = 100.0f / 127.0f;
+  CHECK(pos_to_db(75.0f) - pos_to_db(75.0f - step) < 0.1f);
+  CHECK(pos_to_db(75.0f + step) - pos_to_db(75.0f) < 0.25f);
+  for (float db : {-40.0f, -12.0f, -3.0f, -0.5f, 0.0f, 3.0f})
+    CHECK(std::fabs(pos_to_db(db_to_pos(db)) - db) < 1e-3f);
   std::printf("plugin: %d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }
