@@ -4,7 +4,7 @@
 #   Loop:  сверху тонкая полоса темпа и шестерёнка; строки дорожек: точка парта, круг позиции
 #          с номером, полоса цикла с линией позиции; справа MASTER; снизу три вкладки.
 #   Mixer: на каждую дорожку круг, кнопка M и сдвоенный фейдер; справа MASTER.
-#   Настройки (шестерёнка): RPO/ROP, Free/Quantize, длины дорожек, fade, reverse, квантование mute.
+#   Настройки (шестерёнка): разделы с сегментами и ползунками, прокрутка пальцем.
 # Чёрный фон без плашек, цвет несёт состояние. Виджет читает выходные порты (self.monitors),
 # настройки пишет через контроллеры Zynthian (это LV2-параметры плагина), ничего не ждёт.
 import glob
@@ -129,23 +129,40 @@ def _len(v):
     return "FREE" if v == 0 else ("%d BAR" % v if v == 1 else "%d BARS" % v)
 
 
+QUANT_NAMES = ("NOW", "BEAT", "BAR", "LOOP END")
+# Экран настроек: разделы, в разделе строки.
+#   ("seg", символ, подпись, названия вариантов) — сегментный переключатель, значение = номер варианта
+#   ("sl", символ, подпись, список значений, как показать) — ползунок по шагам списка
 SETTINGS = [
-    ("rec_order", "REC ORDER", [0, 1], lambda v: ("RPO", "ROP")[v]),
-    ("mode", "MODE", [0, 1], lambda v: ("FREE", "QUANTIZE")[v]),
-    ("mute_q", "MUTE AT", [0, 1, 2, 3], lambda v: ("NOW", "BEAT", "BAR", "LOOP END")[v]),
-    ("part_q", "PART AT", [0, 1, 2, 3], lambda v: ("NOW", "BEAT", "BAR", "LOOP END")[v]),
-    ("fade_out", "FADE OUT", FADE_STEPS, _ms),
-    ("fade_in", "FADE IN", FADE_STEPS, _ms),
-    ("rev_time", "REVERSE", REV_STEPS, _ms),
-    ("tempo_glide", "TEMPO GLIDE", [100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 4000], _ms),
-    ("len1", "LENGTH 1", list(range(17)), _len),
-    ("len2", "LENGTH 2", list(range(17)), _len),
-    ("len3", "LENGTH 3", list(range(17)), _len),
-    ("len4", "LENGTH 4", list(range(17)), _len),
+    ("RECORDING", [
+        ("seg", "rec_order", "REC ORDER", ("RPO", "ROP")),
+        ("seg", "mode", "MODE", ("FREE", "QUANTIZE")),
+    ]),
+    ("QUANTIZE", [
+        ("seg", "mute_q", "MUTE AT", QUANT_NAMES),
+        ("seg", "part_q", "PART AT", QUANT_NAMES),
+    ]),
+    ("FADES", [
+        ("sl", "fade_out", "FADE OUT", FADE_STEPS, _ms),
+        ("sl", "fade_in", "FADE IN", FADE_STEPS, _ms),
+        ("sl", "rev_time", "REVERSE", REV_STEPS, _ms),
+    ]),
+    ("TEMPO & SPEED", [
+        ("sl", "tempo_glide", "TEMPO GLIDE", [100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 4000], _ms),
+        ("seg", "spd_snap", "SPEED SNAP", SNAP_NAMES),
+        ("sl", "spd_glide", "SPEED GLIDE", GLIDE_STEPS, lambda v: "OFF" if v == 0 else _ms(v)),
+    ]),
+    ("TRACK LENGTH", [
+        ("sl", "len%d" % k, "TRACK %d" % k, list(range(17)), _len) for k in range(1, 5)
+    ]),
+    ("OUTPUT", [
+        ("seg", "limiter", "LIMITER", ("OFF", "ON")),
+    ]),
 ]
+SCROLL_START_PX = 8     # палец ушёл по вертикали дальше — это прокрутка, а не касание
 SETTING_DEFAULTS = {"rec_order": 0, "mode": 1, "mute_q": 2, "part_q": 3, "tempo_glide": 500, "spd_snap": 0,
                     "spd_glide": 150, "fade_out": 200, "fade_in": 200, "rev_time": 50,
-                    "len1": 0, "len2": 0, "len3": 0, "len4": 0}
+                    "len1": 0, "len2": 0, "len3": 0, "len4": 0, "limiter": 1}
 
 
 def mix(c1, c2, f):
@@ -192,6 +209,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         self.action_until = 0.0
         self.last_widget = None
         self.settings_open = False
+        self.sdrag = None         # касание на экране настроек: прокрутка, ползунок или выбор
+        self.s_scroll = 0.0       # прокрутка настроек, px
+        self.s_max = 0.0
         self.hits = []          # (x0, y0, x1, y1, действие, аргумент) для касаний
         self.mm = None
         self.mm_path = None
@@ -231,6 +251,11 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
     def _on_press(self, event):
         for (x0, y0, x1, y1, what, arg) in self.hits:
             if x0 <= event.x <= x1 and y0 <= event.y <= y1:
+                if what in ("sseg", "ssl", "sbody"):
+                    # что это было, станет ясно по движению пальца: прокрутка или ползунок
+                    self.sdrag = {"what": what, "arg": arg, "x": event.x, "y": event.y,
+                                  "scroll": self.s_scroll, "mode": None}
+                    return
                 if what == "speed":  # метка скорости у дорожки: экран Speed
                     self.speed_slot = arg
                     self.settings_open = False
@@ -289,13 +314,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                     self._zset("limiter", 1 - self._zval("limiter"))
                 elif what == "gear":
                     self.settings_open = not self.settings_open
-                elif what == "step":
-                    sym, values, d = arg
-                    cur = self._zval(sym)
-                    # ближайшее значение из списка, затем шаг вперёд или назад
-                    i = min(range(len(values)), key=lambda k: abs(values[k] - cur))
-                    i = max(0, min(len(values) - 1, i + d))
-                    self._zset(sym, values[i])
+                    self.s_scroll = 0.0
                 self.refresh_gui()
                 return
 
@@ -319,13 +338,43 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             v = int(round(max(-100.0, min(100.0, v))))
             self._zset(sym, 0 if abs(v) < 4 else v)  # у центра прилипает к C
 
+    def _slide(self, arg, x):
+        """Ползунок настроек: положение пальца -> ближайший шаг списка."""
+        sym, values, tx0, tx1 = arg
+        f = max(0.0, min(1.0, (x - tx0) / max(1.0, tx1 - tx0)))
+        v = values[int(round(f * (len(values) - 1)))]
+        if v != self._zval(sym):
+            self._zset(sym, v)
+
     def _on_motion(self, event):
+        d = self.sdrag
+        if d:
+            dx, dy = event.x - d["x"], event.y - d["y"]
+            if d["mode"] is None:
+                if abs(dy) >= SCROLL_START_PX and abs(dy) > abs(dx):
+                    d["mode"] = "scroll"
+                elif d["what"] == "ssl" and abs(dx) >= 4:
+                    d["mode"] = "slide"
+            if d["mode"] == "scroll":
+                self.s_scroll = max(0.0, min(self.s_max, d["scroll"] - dy))
+            elif d["mode"] == "slide":
+                self._slide(d["arg"], event.x)
+            if d["mode"]:
+                self._draw()
+            return
         if self.drag:
             self._drag_to(event)
             self._draw()
 
     def _on_release(self, event):
         self.drag = None
+        d, self.sdrag = self.sdrag, None
+        if d and d["mode"] is None and event is not None:  # простое касание
+            if d["what"] == "sseg":
+                self._zset(d["arg"][0], d["arg"][1])
+            elif d["what"] == "ssl":
+                self._slide(d["arg"], event.x)
+            self.refresh_gui()
 
     # ---------- текст, который всегда влезает в свою клетку ----------
     def _family(self):
@@ -516,12 +565,19 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         top_h = int(min(max(h * 0.12, 18), 46))
         tab_h = int(min(max(h * 0.11, 16), 40))
         gap = max(2, int(h * 0.012))
-        self._tempo_bar(st, 0, 0, w, top_h, now)
         body = (0, top_h + gap, w, h - tab_h - gap)
+        if self.speed_slot is None and self.settings_open:
+            # настройки прокручиваются: строки за краем закрываются полосой темпа и вкладками
+            self._settings(*body)
+            c.create_rectangle(0, 0, w, body[1], fill=BG, width=0)
+            c.create_rectangle(0, body[3], w, h, fill=BG, width=0)
+            self._tempo_bar(st, 0, 0, w, top_h, now)
+        else:
+            self._tempo_bar(st, 0, 0, w, top_h, now)
         if self.speed_slot is not None:
             self._speed_view(st, *body)
         elif self.settings_open:
-            self._settings(*body)
+            pass
         elif st["widget"] == 1:
             self._mixer(st, *body)
         else:
@@ -924,39 +980,104 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             self.hits.append((bx, by0, bx + bw, by0 + bh, kind, arg))
 
     def _settings(self, x0, y0, x1, y1):
-        """Настройки: две колонки, в строке подпись и значение со стрелками ◀ ▶ по краям."""
+        """Настройки одной колонкой с разделами: выбор из 2-4 вариантов — сегменты, времена и длины —
+        ползунки. Не влезает — прокрутка пальцем, справа полоса прокрутки."""
         c = self.widget_canvas
-        cols, rows = 2, (len(SETTINGS) + 1) // 2
-        gap = max(4, int((x1 - x0) * 0.012))
-        cw = (x1 - x0 - gap * 3) / cols
-        rh = (y1 - y0) / rows
-        for k, (sym, label, values, fmt) in enumerate(SETTINGS):
-            col, row = k // rows, k % rows
-            cx0 = x0 + gap + col * (cw + gap)
-            ry0 = y0 + row * rh
-            ry1 = ry0 + rh - max(2, rh * 0.08)
-            cy = (ry0 + ry1) / 2
-            v = self._zval(sym)
-            c.create_rectangle(cx0, ry0, cx0 + cw, ry1, fill="#141414", width=0)
-            self._text(cx0 + cw * 0.03, cy, label, cw * 0.36, (ry1 - ry0) * 0.5, DIM, "w")
-            # значение и стрелки: левая половина уменьшает, правая увеличивает
-            vx0, vx1 = cx0 + cw * 0.42, cx0 + cw
-            aw = (ry1 - ry0) * 0.9
-            changed = v != SETTING_DEFAULTS.get(sym, v)
-            try:
-                text = fmt(v)
-            except Exception:
-                text = str(v)
-            self._text((vx0 + vx1) / 2, cy, text, (vx1 - vx0) - aw * 2.2, (ry1 - ry0) * 0.62,
-                       GREEN if changed else TEXT)
-            ah = (ry1 - ry0) * 0.22
-            ax = vx0 + aw * 0.5
-            c.create_polygon(ax + ah * 0.6, cy - ah, ax + ah * 0.6, cy + ah, ax - ah * 0.6, cy, fill="#9a9a9a")
-            ax = vx1 - aw * 0.5
-            c.create_polygon(ax - ah * 0.6, cy - ah, ax - ah * 0.6, cy + ah, ax + ah * 0.6, cy, fill="#9a9a9a")
-            mid = (vx0 + vx1) / 2
-            self.hits.append((vx0, ry0, mid, ry1, "step", (sym, values, -1)))
-            self.hits.append((mid, ry0, vx1, ry1, "step", (sym, values, 1)))
+        w, vh = x1 - x0, y1 - y0
+        rh = int(min(max(vh * 0.15, 26), 54))      # строка
+        hdr = int(rh * 0.62)                        # заголовок раздела
+        pad = max(8, int(w * 0.02))
+        sb_w = 4
+        lab_x = x0 + pad + rh * 0.22
+        cx0 = x0 + pad + w * 0.30                   # начало переключателя или ползунка
+        cx1 = x1 - pad - sb_w - 4
+        total = sum(hdr + len(items) * rh for _, items in SETTINGS) + rh * 0.3
+        self.s_max = max(0.0, total - vh)
+        self.s_scroll = max(0.0, min(self.s_max, self.s_scroll))
+
+        def visible(a, b):  # надписи только у строк, видных целиком: наполовину скрытых не читают
+            return a >= y0 - 1 and b <= y1 + 1
+
+        def hit(hx0, hy0, hx1, hy1, what, arg):
+            hy0, hy1 = max(hy0, y0), min(hy1, y1)
+            if hy1 - hy0 > 4:
+                self.hits.append((hx0, hy0, hx1, hy1, what, arg))
+
+        y = y0 - self.s_scroll
+        for title, items in SETTINGS:
+            if y + hdr > y0 and y < y1:
+                ty = y + hdr * 0.58
+                if visible(y, y + hdr):
+                    f = self._fit(title, w * 0.4, hdr * 0.62, True)
+                    if f is not None:
+                        c.create_text(x0 + pad, ty, text=title, fill="#7d7d7d", anchor="w", font=f)
+                        tx = x0 + pad + f.measure(title) + pad
+                        c.create_line(tx, ty, cx1, ty, fill="#262626", width=1)
+            y += hdr
+            for item in items:
+                ry0, ry1 = y, y + rh
+                y += rh
+                if ry1 <= y0 or ry0 >= y1:
+                    continue
+                kind, sym, label = item[:3]
+                cy = (ry0 + ry1) / 2
+                ih = rh * 0.68                      # высота переключателя и ползунка
+                full = visible(ry0, ry1)
+                v = self._zval(sym)
+                if v != SETTING_DEFAULTS.get(sym, v):  # отличается от значения по умолчанию
+                    r = max(2, rh * 0.07)
+                    c.create_oval(x0 + pad - r, cy - r, x0 + pad + r, cy + r, fill=GREEN, width=0)
+                if full:
+                    self._text(lab_x, cy, label, cx0 - lab_x - pad, ih * 0.62, "#d8d8d8", "w")
+                if kind == "seg":
+                    names = item[3]
+                    n = len(names)
+                    sg = 3
+                    sw = (cx1 - cx0 - sg * (n - 1)) / n
+                    for k, name in enumerate(names):
+                        sx = cx0 + k * (sw + sg)
+                        on = k == v
+                        c.create_rectangle(sx, cy - ih / 2, sx + sw, cy + ih / 2,
+                                           fill=mix(GREEN, BG, 0.5) if on else "#161616",
+                                           outline=GREEN if on else "#2a2a2a", width=1)
+                        if full:
+                            self._text(sx + sw / 2, cy, name, sw * 0.88, ih * 0.6, TEXT if on else "#8a8a8a")
+                        hit(sx, ry0, sx + sw, ry1, "sseg", (sym, k))
+                else:
+                    values, fmt = item[3], item[4]
+                    n = len(values)
+                    i = min(range(n), key=lambda k: abs(values[k] - v))
+                    try:
+                        text = fmt(v)
+                    except Exception:
+                        text = str(v)
+                    val_w = (cx1 - cx0) * 0.24
+                    kr = ih * 0.32                  # бегунок
+                    tx0, tx1 = cx0 + kr, cx1 - val_w - kr - pad * 0.5
+                    kx = tx0 + (tx1 - tx0) * i / max(1, n - 1)
+                    th = max(3, ih * 0.12)
+                    c.create_rectangle(tx0, cy - th / 2, tx1, cy + th / 2, fill="#2a2a2a", width=0)
+                    c.create_rectangle(tx0, cy - th / 2, kx, cy + th / 2, fill=mix(GREEN, BG, 0.35), width=0)
+                    if n <= 17:  # шаги видны точками
+                        dr = max(1.5, th * 0.35)
+                        for k in range(n):
+                            dx = tx0 + (tx1 - tx0) * k / max(1, n - 1)
+                            c.create_oval(dx - dr, cy + th + dr, dx + dr, cy + th + 3 * dr,
+                                          fill="#4a4a4a" if k > i else "#7aa77f", width=0)
+                    c.create_oval(kx - kr, cy - kr, kx + kr, cy + kr, fill=TEXT, outline=GREEN, width=2)
+                    if full:
+                        self._text(cx1, cy, text, val_w, ih * 0.62, TEXT, "e")
+                    hit(cx0 - pad * 0.5, ry0, cx1, ry1, "ssl", (sym, values, tx0, tx1))
+                if ry1 < y1:
+                    c.create_line(x0 + pad, ry1, cx1, ry1, fill="#141414", width=1)
+        # полоса прокрутки
+        if self.s_max > 0:
+            sx = x1 - pad / 2 - sb_w
+            c.create_rectangle(sx, y0 + 2, sx + sb_w, y1 - 2, fill="#1a1a1a", width=0)
+            th = max(16, (vh - 4) * vh / total)
+            ty = y0 + 2 + (vh - 4 - th) * self.s_scroll / self.s_max
+            c.create_rectangle(sx, ty, sx + sb_w, ty + th, fill="#6a6a6a", width=0)
+        self.hits.append((x0, y0, x1, y1, "sbody", None))  # остальное поле — прокрутка
 
     def _tabs(self, st, x0, y0, x1, y1, now):
         """Три вкладки снизу, как у Aeros: парт, дорожка и что сделает следующее нажатие Rec."""
@@ -972,7 +1093,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         if self.speed_slot is not None:
             items = [("SPEED", TEXT), ("TRACK %d" % (self.speed_slot + 1), GREEN), ("CLOSE", GREEN)]
         elif self.settings_open:
-            items = [("SETTINGS", TEXT), ("TAP ◀ ▶ TO CHANGE", DIM), ("⚙ CLOSE", GREEN)]
+            items = [("SETTINGS", TEXT), ("SWIPE \u2195 TO SCROLL" if self.s_max > 0 else "TAP TO CHANGE", DIM),
+                     ("CLOSE", GREEN)]
         else:
             part_txt = "PART %d" % (st["part"] + 1)
             if st["pend"] >= 0:

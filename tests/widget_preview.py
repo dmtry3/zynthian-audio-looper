@@ -314,19 +314,67 @@ def main():
     check("шестерёнка открывает настройки", wdg.settings_open and "QUANTIZE" in texts(wdg))
     no_overlap("800x480, настройки")
 
-    def tap_step(sym, d):
-        hit = [hh for hh in wdg.hits if hh[4] == "step" and hh[5][0] == sym and hh[5][2] == d][0]
-        wdg._on_press(types.SimpleNamespace(x=(hit[0] + hit[2]) / 2, y=(hit[1] + hit[3]) / 2))
+    def ev(x, y):
+        return types.SimpleNamespace(x=x, y=y)
 
-    tap_step("mode", -1)
-    check("MODE: Quantize -> Free", proc.controllers_dict["mode"].value == 0 and "FREE" in texts(wdg))
-    tap_step("mode", -1)
-    check("на краю списка значение не уходит за предел", proc.controllers_dict["mode"].value == 0)
-    tap_step("fade_out", 1)
-    check("FADE OUT 200 -> 300 ms", proc.controllers_dict["fade_out"].value == 300 and "300 ms" in texts(wdg))
-    tap_step("len2", 1)
-    tap_step("len2", 1)
-    check("LENGTH 2 -> 2 BARS", proc.controllers_dict["len2"].value == 2 and "2 BARS" in texts(wdg))
+    def shit(kind, sym, k=None):
+        return [hh for hh in wdg.hits if hh[4] == kind and hh[5][0] == sym and (k is None or hh[5][1] == k)]
+
+    def tap_seg(sym, k):
+        h_ = shit("sseg", sym, k)[0]
+        e = ev((h_[0] + h_[2]) / 2, (h_[1] + h_[3]) / 2)
+        wdg._on_press(e)
+        wdg._on_release(e)
+
+    def slide_to(sym, value):
+        """Тап по ползунку там, где стоит нужный шаг."""
+        h_ = shit("ssl", sym)[0]
+        _, values, tx0, tx1 = h_[5]
+        x = tx0 + (tx1 - tx0) * values.index(value) / (len(values) - 1)
+        e = ev(x, (h_[1] + h_[3]) / 2)
+        wdg._on_press(e)
+        wdg._on_release(e)
+
+    def scroll(dy):
+        e0 = ev(wdg.width * 0.15, wdg.height * 0.5)
+        wdg._on_press(e0)
+        for k in range(1, 6):
+            wdg._on_motion(ev(e0.x, e0.y + dy * k / 5))
+        wdg._on_release(ev(e0.x, e0.y + dy))
+
+    cd = proc.controllers_dict
+    check("сегменты видны: RPO, ROP, FREE, QUANTIZE", all(t in texts(wdg) for t in ("RPO", "ROP", "FREE")))
+    tap_seg("mode", 0)
+    check("MODE: Quantize -> Free", cd["mode"].value == 0)
+    tap_seg("mode", 0)
+    check("повторный тап по выбранному не меняет", cd["mode"].value == 0)
+    slide_to("fade_out", 300)
+    check("FADE OUT 200 -> 300 ms", cd["fade_out"].value == 300 and "300 ms" in texts(wdg))
+    # ползунок тянется пальцем
+    h_ = shit("ssl", "fade_in")[0]
+    _, values, tx0, tx1 = h_[5]
+    cy = (h_[1] + h_[3]) / 2
+    wdg._on_press(ev(tx0 + 2, cy))
+    for k in range(1, 11):
+        wdg._on_motion(ev(tx0 + 2 + (tx1 - tx0) * k / 10, cy + 1))
+    wdg._on_release(ev(tx1, cy))
+    check("FADE IN тянется до 4 s", cd["fade_in"].value == 4000)
+    check("всё не влезает: есть прокрутка", wdg.s_max > 0)
+    w0 = cd["fade_out"].value
+    scroll(-wdg.height)
+    scroll(-wdg.height)  # палец дважды вверх: до конца списка
+    check("прокрутка до конца", abs(wdg.s_scroll - wdg.s_max) < 1)
+    check("внизу видны LIMITER и TRACK 4", "LIMITER" in texts(wdg) and "TRACK 4" in texts(wdg))
+    check("прокрутка не трогает ползунки", cd["fade_out"].value == w0)
+    no_overlap("800x480, настройки внизу")
+    slide_to("len2", 2)
+    check("TRACK 2 -> 2 BARS", cd["len2"].value == 2 and "2 BARS" in texts(wdg))
+    tap_seg("limiter", 0)
+    check("LIMITER OFF", cd["limiter"].value == 0)
+    tap_seg("limiter", 1)
+    scroll(wdg.height)
+    scroll(wdg.height)
+    check("прокрутка обратно наверх", wdg.s_scroll == 0)
     m["o_widget"] = 1.0
     wdg.update()
     check("переключение Loop/Mixer с футсвитча закрывает настройки", not wdg.settings_open)
@@ -414,8 +462,12 @@ def main():
         wdg.update()
         no_overlap(size)
         wdg.settings_open = True
+        wdg.s_scroll = 0.0
         wdg.update()
         no_overlap(size + ", настройки")
+        wdg.s_scroll = 1e9
+        wdg.update()
+        no_overlap(size + ", настройки внизу")
         wdg.settings_open = False
         m["o_widget"] = 1.0
         wdg.update()
