@@ -61,16 +61,38 @@ class Engine:
         self.m = {"o_bpm": 120.0, "o_bpb": 4.0, "o_bar": 0.0, "o_beat": 0.0, "o_rolling": 1.0,
                   "o_tsrc": 1.0, "o_clk_bpm": 0.0, "o_pos_cnt": 1.0, "o_action": 0.0,
                   "o_act_cnt": 0.0, "o_held": 0.0, "o_track": 0.0, "o_part": 0.0,
-                  "o_pend": -1.0, "o_widget": 0.0}
+                  "o_pend": -1.0, "o_widget": 0.0, "o_flags": 0.0, "o_pool": 0.0}
+        for i in range(1, 5):
+            self.m["o_st%d" % i] = 0.0
+            self.m["o_pos%d" % i] = 0.0
+            self.m["o_len%d" % i] = 0.0
 
     def get_monitors_dict(self):
         return dict(self.m)
+
+
+class Ctrl:
+    def __init__(self, sym, value, lo, hi):
+        self.symbol, self.value, self.lo, self.hi = sym, value, lo, hi
+
+    def set_value(self, v, send=True):
+        assert isinstance(v, int), "%s: %r is not int" % (self.symbol, v)
+        assert self.lo <= v <= self.hi, "%s: %r out of range" % (self.symbol, v)
+        self.value = v
 
 
 class Processor:
     def __init__(self):
         self.engine = Engine()
         self.id = 1
+        # настройки — LV2-параметры плагина (как в lv2/audio_looper.ttl)
+        self.controllers_dict = {
+            "rec_order": Ctrl("rec_order", 0, 0, 1), "mode": Ctrl("mode", 1, 0, 1),
+            "fade_out": Ctrl("fade_out", 200, 10, 4000), "fade_in": Ctrl("fade_in", 200, 10, 4000),
+            "rev_time": Ctrl("rev_time", 50, 5, 1000), "mute_q": Ctrl("mute_q", 2, 0, 3),
+        }
+        for i in range(1, 5):
+            self.controllers_dict["len%d" % i] = Ctrl("len%d" % i, 0, 0, 16)
 
 
 class Control:
@@ -165,7 +187,7 @@ def main():
     m["o_bpb"], m["o_beat"] = 3.0, 2.5
     wdg.update()
     ovals = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "oval"]
-    check("3 точки долей + 4 точки партов + 4 круга дорожек", len(ovals) == 3 + 4 + 4 and "2.3" in texts(wdg) and "3/4" in texts(wdg))
+    check("3 точки долей + 4 точки партов + 4 круга дорожек + шестерёнка", len(ovals) == 3 + 4 + 4 + 2 and "2.3" in texts(wdg) and "3/4" in texts(wdg))
 
     m["o_tsrc"] = 0.0
     wdg.update()
@@ -180,7 +202,48 @@ def main():
 
     m["o_action"], m["o_act_cnt"] = 99.0, 5.0
     wdg.update()
-    check("неизвестный код действия не ломает виджет", "READY" in texts(wdg))
+    check("неизвестный код действия не ломает виджет", "RECORD" in texts(wdg))
+
+    # состояния дорожек: запись красная, овердаб оранжевый, mute серый, reverse фиолетовый
+    m["o_st1"], m["o_st2"], m["o_st3"], m["o_st4"] = 2.0, 4.0, 3.0, 3.0
+    m["o_len1"], m["o_len2"], m["o_len3"], m["o_len4"] = 1.5, 8.0, 8.0, 4.0
+    m["o_pos2"], m["o_pos3"], m["o_pos4"] = 0.3, 0.6, 0.9
+    m["o_flags"] = float((1 << 2) | (1 << 7))  # дорожка 3 mute, дорожка 4 reverse
+    m["o_track"] = 3.0
+    wdg.update()
+    fills = [wdg.widget_canvas.itemcget(i, "fill") for i in wdg.widget_canvas.find_all()]
+    check("цвета состояний дорожек", all(col in fills for col in (mod.RED, mod.ORANGE, mod.GRAY)))
+    check("reverse фиолетовый", mod.PURPLE in fills)
+    no_overlap("800x480, дорожки играют")
+    m["o_track"] = 0.0
+    m["o_st1"] = 0.0
+    wdg.update()
+    check("подсказка педали Rec на пустой дорожке", "RECORD" in texts(wdg))
+
+    # шестерёнка открывает настройки, стрелки меняют значения
+    gear = [hh for hh in wdg.hits if hh[4] == "gear"][0]
+    wdg._on_press(types.SimpleNamespace(x=(gear[0] + gear[2]) / 2, y=(gear[1] + gear[3]) / 2))
+    check("шестерёнка открывает настройки", wdg.settings_open and "QUANTIZE" in texts(wdg))
+    no_overlap("800x480, настройки")
+
+    def tap_step(sym, d):
+        hit = [hh for hh in wdg.hits if hh[4] == "step" and hh[5][0] == sym and hh[5][2] == d][0]
+        wdg._on_press(types.SimpleNamespace(x=(hit[0] + hit[2]) / 2, y=(hit[1] + hit[3]) / 2))
+
+    tap_step("mode", -1)
+    check("MODE: Quantize -> Free", proc.controllers_dict["mode"].value == 0 and "FREE" in texts(wdg))
+    tap_step("mode", -1)
+    check("на краю списка значение не уходит за предел", proc.controllers_dict["mode"].value == 0)
+    tap_step("fade_out", 1)
+    check("FADE OUT 200 -> 300 ms", proc.controllers_dict["fade_out"].value == 300 and "300 ms" in texts(wdg))
+    tap_step("len2", 1)
+    tap_step("len2", 1)
+    check("LENGTH 2 -> 2 BARS", proc.controllers_dict["len2"].value == 2 and "2 BARS" in texts(wdg))
+    m["o_widget"] = 1.0
+    wdg.update()
+    check("переключение Loop/Mixer с футсвитча закрывает настройки", not wdg.settings_open)
+    m["o_widget"] = 0.0
+    wdg.update()
 
     # виджет в Zynthian занимает только часть экрана: проверяем и маленькие размеры
     m["o_bpm"], m["o_bar"], m["o_bpb"] = 133.5, 127.0, 7.0
@@ -191,6 +254,10 @@ def main():
         root.update()
         wdg.update()
         no_overlap(size)
+        wdg.settings_open = True
+        wdg.update()
+        no_overlap(size + ", настройки")
+        wdg.settings_open = False
 
     root.destroy()
     print("%s" % ("OK" if not fails else "%d FAILED" % fails))

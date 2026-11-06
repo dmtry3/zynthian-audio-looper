@@ -1,10 +1,13 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 # Audio Looper: виджет в стиле экрана Aeros.
-#   Loop:  сверху тонкая полоса темпа; строки дорожек: точка парта, круг позиции с номером,
-#          волна во всю ширину; справа индикатор MASTER; снизу три вкладки с подписями.
+#   Loop:  сверху тонкая полоса темпа и шестерёнка; строки дорожек: точка парта, круг позиции
+#          с номером, полоса цикла с линией позиции; справа MASTER; снизу три вкладки.
 #   Mixer: на каждую дорожку круг, кнопка M и сдвоенный фейдер; справа MASTER.
-# Чёрный фон без плашек, цвет несёт состояние. Виджет только читает выходные порты (self.monitors).
+#   Настройки (шестерёнка): RPO/ROP, Free/Quantize, длины дорожек, fade, reverse, квантование mute.
+# Чёрный фон без плашек, цвет несёт состояние. Виджет читает выходные порты (self.monitors),
+# настройки пишет через контроллеры Zynthian (это LV2-параметры плагина), ничего не ждёт.
+import math
 import time
 import tkinter
 import tkinter.font
@@ -49,9 +52,63 @@ ACTIONS = [
     ("LOOP", TEXT),
     ("MIXER", TEXT),
 ]
-ACTION_HOLD_S = 1.5     # сколько подпись последнего действия горит ярко
+# Состояния дорожки (порт o_stN, как TrackView::state в core/looper.h)
+ST_EMPTY, ST_ARMED, ST_REC, ST_PLAY, ST_DUB = range(5)
+ACTION_HOLD_S = 1.5     # сколько подпись последнего действия горит вместо подсказки
 FLASH_S = 0.12          # вспышка полосы темпа на сильной доле
 FONT_PREFS = ("DejaVu Sans Condensed", "DejaVu Sans", "Liberation Sans Narrow", "Liberation Sans")
+
+# Настройки: (символ LV2-параметра, подпись, список значений, как показать значение)
+FADE_STEPS = [10, 20, 50, 100, 150, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 4000]
+REV_STEPS = [5, 10, 20, 30, 50, 75, 100, 150, 200, 300, 500, 750, 1000]
+
+
+def _ms(v):
+    return "%d ms" % v if v < 1000 else "%.1f s" % (v / 1000.0)
+
+
+def _len(v):
+    return "FREE" if v == 0 else ("%d BAR" % v if v == 1 else "%d BARS" % v)
+
+
+SETTINGS = [
+    ("rec_order", "REC ORDER", [0, 1], lambda v: ("RPO", "ROP")[v]),
+    ("mode", "MODE", [0, 1], lambda v: ("FREE", "QUANTIZE")[v]),
+    ("mute_q", "MUTE AT", [0, 1, 2, 3], lambda v: ("NOW", "BEAT", "BAR", "LOOP END")[v]),
+    ("fade_out", "FADE OUT", FADE_STEPS, _ms),
+    ("fade_in", "FADE IN", FADE_STEPS, _ms),
+    ("rev_time", "REVERSE", REV_STEPS, _ms),
+    ("len1", "LENGTH 1", list(range(17)), _len),
+    ("len2", "LENGTH 2", list(range(17)), _len),
+    ("len3", "LENGTH 3", list(range(17)), _len),
+    ("len4", "LENGTH 4", list(range(17)), _len),
+]
+SETTING_DEFAULTS = {"rec_order": 0, "mode": 1, "mute_q": 2, "fade_out": 200, "fade_in": 200, "rev_time": 50,
+                    "len1": 0, "len2": 0, "len3": 0, "len4": 0}
+
+
+def mix(c1, c2, f):
+    """Смесь цветов: f=0 -> c1, f=1 -> c2."""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(x + (y - x) * f) for x, y in zip(a, b))
+
+
+def track_color(state, muted, reversed_, active):
+    """Цвет дорожки по приоритету из ТЗ."""
+    if state == ST_REC:
+        return RED
+    if state == ST_DUB:
+        return ORANGE
+    if state == ST_EMPTY or state == ST_ARMED:
+        return GREEN if active else EMPTY
+    if muted:
+        return GRAY
+    if reversed_:
+        return PURPLE
+    if active:
+        return GREEN
+    return BLUE
 
 
 class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
@@ -60,18 +117,52 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         super().__init__(parent)
         self.widget_canvas = tkinter.Canvas(self, highlightthickness=0, relief='flat', bg=BG)
         self.widget_canvas.grid(sticky='news')
+        self.widget_canvas.bind("<ButtonPress-1>", self._on_press)
         self.family = None
         self.fonts = {}
         self.last_bar = None
         self.flash_until = 0.0
         self.last_cnt = None
         self.action_until = 0.0
+        self.last_widget = None
+        self.settings_open = False
+        self.hits = []          # (x0, y0, x1, y1, действие, аргумент) для касаний
 
     def on_size(self, event):
         if not super().on_size(event):
             return
         self.widget_canvas.grid(row=0, column=0, sticky='news')
         self.refresh_gui()
+
+    # ---------- контроллеры Zynthian (LV2-параметры настроек) ----------
+    def _zval(self, sym):
+        try:
+            return int(round(float(self.processor.controllers_dict[sym].value)))
+        except Exception:
+            return SETTING_DEFAULTS.get(sym, 0)
+
+    def _zset(self, sym, value):
+        try:
+            self.processor.controllers_dict[sym].set_value(int(value))
+            return True
+        except Exception:
+            return False
+
+    # ---------- касания ----------
+    def _on_press(self, event):
+        for (x0, y0, x1, y1, what, arg) in self.hits:
+            if x0 <= event.x <= x1 and y0 <= event.y <= y1:
+                if what == "gear":
+                    self.settings_open = not self.settings_open
+                elif what == "step":
+                    sym, values, d = arg
+                    cur = self._zval(sym)
+                    # ближайшее значение из списка, затем шаг вперёд или назад
+                    i = min(range(len(values)), key=lambda k: abs(values[k] - cur))
+                    i = max(0, min(len(values) - 1, i + d))
+                    self._zset(sym, values[i])
+                self.refresh_gui()
+                return
 
     # ---------- текст, который всегда влезает в свою клетку ----------
     def _family(self):
@@ -107,16 +198,18 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             self.widget_canvas.create_text(x, y, text=text, fill=color, anchor=anchor, font=f)
 
     # ---------- общие элементы ----------
-    def _pie(self, cx, cy, r, color, frac, outline_only=False):
+    def _pie(self, cx, cy, r, color, frac, empty):
         """Круг позиции, как у Aeros: заполненный сектор = пройденная часть цикла."""
         c = self.widget_canvas
-        if outline_only:
+        if empty:
             c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=max(1, int(r * 0.12)))
             return
-        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=mix(color, BG, 0.65), width=0)
-        if frac > 0.001:
-            extent = -359.9 * min(1.0, frac)
-            c.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=extent, fill=color, width=0)
+        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=mix(color, BG, 0.62), width=0)
+        if frac > 0.002:
+            if frac > 0.998:
+                c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=color, width=0)
+            else:
+                c.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-360.0 * frac, fill=color, width=0)
 
     def _meter(self, x0, y0, x1, y1, level=0.0):
         """Сегментный индикатор: зелёный, сверху жёлтый и красный."""
@@ -139,14 +232,27 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         self._meter(mid - mw * 1.15, y0 + lab_h * 1.4, mid - mw * 0.15, y1)
         self._meter(mid + mw * 0.15, y0 + lab_h * 1.4, mid + mw * 1.15, y1)
 
+    def _gear(self, cx, cy, r, color):
+        """Значок шестерёнки: зубцы и кольцо."""
+        c = self.widget_canvas
+        for k in range(8):
+            a = k * math.pi / 4
+            x, y = cx + math.cos(a) * r * 0.82, cy + math.sin(a) * r * 0.82
+            t = r * 0.2
+            c.create_rectangle(x - t, y - t, x + t, y + t, fill=color, width=0)
+        c.create_oval(cx - r * 0.72, cy - r * 0.72, cx + r * 0.72, cy + r * 0.72, fill=color, width=0)
+        c.create_oval(cx - r * 0.3, cy - r * 0.3, cx + r * 0.3, cy + r * 0.3, fill=BG, width=0)
+
     # ---------- кадр ----------
     def refresh_gui(self):
         m = self.monitors or {}
         c = self.widget_canvas
         c.delete("all")
+        self.hits = []
         w, h = max(self.width, 120), max(self.height, 80)
         now = time.monotonic()
 
+        flags = int(m.get("o_flags", 0))
         st = {
             "bpm": float(m.get("o_bpm", 0.0)),
             "bpb": max(1, min(16, int(round(m.get("o_bpb", 4))))),
@@ -159,7 +265,18 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             "part": int(m.get("o_part", 0)) % 4,
             "pend": int(m.get("o_pend", -1)),
             "widget": int(m.get("o_widget", 0)),
+            "quantize": self._zval("mode") == 1,
+            "rop": self._zval("rec_order") == 1,
+            "tracks": [],
         }
+        for i in range(4):
+            st["tracks"].append({
+                "state": int(m.get("o_st%d" % (i + 1), 0)),
+                "pos": float(m.get("o_pos%d" % (i + 1), 0.0)),
+                "len": float(m.get("o_len%d" % (i + 1), 0.0)),
+                "muted": bool(flags >> i & 1),
+                "reversed": bool(flags >> (4 + i) & 1),
+            })
         if not 0 <= st["act"] < len(ACTIONS):
             st["act"] = 0
 
@@ -170,13 +287,19 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         if self.last_cnt is not None and st["cnt"] != self.last_cnt:
             self.action_until = now + ACTION_HOLD_S
         self.last_cnt = st["cnt"]
+        # футсвитч переключил Loop/Mixer: настройки закрываются
+        if self.last_widget is not None and st["widget"] != self.last_widget:
+            self.settings_open = False
+        self.last_widget = st["widget"]
 
         top_h = int(min(max(h * 0.12, 18), 46))
         tab_h = int(min(max(h * 0.11, 16), 40))
         gap = max(2, int(h * 0.012))
         self._tempo_bar(st, 0, 0, w, top_h, now)
         body = (0, top_h + gap, w, h - tab_h - gap)
-        if st["widget"] == 1:
+        if self.settings_open:
+            self._settings(*body)
+        elif st["widget"] == 1:
             self._mixer(st, *body)
         else:
             self._loop(st, *body)
@@ -200,7 +323,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             beat_i = -1
             self._text(x0 + w * 0.015, cy, "NO TEMPO", w * 0.3, hh * 0.7, RED, "w")
         # точки долей: первая крупнее и ярче, текущая горит
-        dx0, dx1 = x0 + w * 0.47, x1 - w * 0.01
+        gear_w = hh * 1.3
+        dx0, dx1 = x0 + w * 0.47, x1 - gear_w - w * 0.01
         n = st["bpb"]
         step = (dx1 - dx0) / n
         rmax = min(hh * 0.3, step * 0.4)
@@ -210,6 +334,10 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             col = (TEXT if on else "#5a5a5a") if i == 0 else ("#d0d0d0" if on else "#2c2c2c")
             cx = dx0 + step * (i + 0.5)
             c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=col, width=0)
+        # шестерёнка: вкладка настроек
+        gx = x1 - gear_w / 2
+        self._gear(gx, cy, hh * 0.32, GREEN if self.settings_open else "#9a9a9a")
+        self.hits.append((x1 - gear_w, y0, x1, y1, "gear", None))
 
     def _loop(self, st, x0, y0, x1, y1):
         c = self.widget_canvas
@@ -219,7 +347,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         master_w = max(34, w * 0.085)
         wx1 = x1 - master_w - 4
         blink = int(time.monotonic() * 3) % 2 == 0
+        beats_per_s = st["bpm"] / 60.0 if st["bpm"] > 0 else 2.0
         for i in range(4):
+            tr = st["tracks"][i]
             ry0, ry1 = y0 + i * row_h, y0 + (i + 1) * row_h
             cy = (ry0 + ry1) / 2
             # точка парта (строка i = парт i), как столбик точек у Aeros
@@ -232,17 +362,46 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             elif not (i == st["pend"] and not blink):
                 col = GREEN if i == st["pend"] else DIM
                 c.create_oval(px - pr, cy - pr, px + pr, cy + pr, outline=col, width=max(1, int(pr * 0.35)))
-            # круг позиции с номером дорожки, под ним скорость
+            # цвет дорожки по приоритету из ТЗ; ожидание такта мигает красным
             active = i == st["track"]
+            state = tr["state"]
+            color = track_color(state, tr["muted"], tr["reversed"], active)
+            if state == ST_ARMED:
+                color = RED if blink else EMPTY
+            has_loop = state in (ST_PLAY, ST_DUB) and tr["len"] > 0
+            # круг позиции с номером, под ним скорость
             pie_r = row_h * 0.3
             pcx, pcy = x0 + part_w + row_h * 0.42, ry0 + row_h * 0.4
-            color = GREEN if active else EMPTY
-            self._pie(pcx, pcy, pie_r, color, 0.0, outline_only=True)
-            self._text(pcx, pcy, str(i + 1), pie_r * 1.3, pie_r * 1.3, GREEN if active else DIM)
+            frac = tr["pos"] if has_loop else (1.0 if state == ST_REC else 0.0)
+            self._pie(pcx, pcy, pie_r, color, frac, empty=not (has_loop or state == ST_REC))
+            num_col = TEXT if (has_loop or state == ST_REC) else (GREEN if active else DIM)
+            self._text(pcx, pcy, str(i + 1), pie_r * 1.3, pie_r * 1.3, num_col)
             self._text(pcx, ry0 + row_h * 0.87, "1.00×", row_h * 0.8, row_h * 0.22, DIM, bold=False)
-            # поле волны; пустая дорожка — тонкая средняя линия
+            # полоса цикла (волна появится на этапе 3)
             wx0 = x0 + part_w + row_h * 0.9
-            c.create_line(wx0, cy, wx1, cy, fill=GRID, width=1)
+            bw = wx1 - wx0
+            if has_loop or state == ST_REC:
+                band = row_h * 0.26
+                c.create_rectangle(wx0, cy - band, wx1, cy + band, fill=mix(color, BG, 0.7), width=0)
+                if has_loop and st["quantize"]:
+                    # тонкие линии долей, толстые — тактов
+                    beats = tr["len"] * beats_per_s
+                    nb = int(round(beats))
+                    if 0 < nb <= 64:
+                        for b in range(1, nb):
+                            x = wx0 + bw * b / beats
+                            bar_line = b % st["bpb"] == 0
+                            c.create_line(x, cy - row_h * 0.38, x, cy + row_h * 0.38,
+                                          fill="#9a9a9a" if bar_line else "#3c3c3c", width=2 if bar_line else 1)
+                if has_loop:
+                    c.create_line(wx1 - 1, ry0 + 3, wx1 - 1, ry1 - 3, fill=RED, width=2)  # конец цикла
+                    x = wx0 + bw * min(1.0, max(0.0, tr["pos"]))
+                    c.create_line(x, ry0 + 3, x, ry1 - 3, fill=TEXT, width=2)              # позиция
+                    c.create_oval(x - 3, ry0 + 1, x + 3, ry0 + 7, fill=TEXT, width=0)
+                else:
+                    self._text(wx0 + bw / 2, cy, "REC %.1f s" % tr["len"], bw * 0.4, row_h * 0.3, TEXT)
+            else:
+                c.create_line(wx0, cy, wx1, cy, fill=GRID, width=1)
             if active:
                 c.create_rectangle(x0 + part_w + 2, ry0 + 2, wx1, ry1 - 2, outline=GREEN, width=2)
         self._master(wx1 + 6, y0, x1 - 4, y1)
@@ -254,19 +413,22 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         master_w = max(34, w * 0.12)
         cw = (w - master_w - 8) / 4.0
         for i in range(4):
+            tr = st["tracks"][i]
             cx0 = x0 + i * cw
             mid = cx0 + cw / 2
             active = i == st["track"]
-            col = GREEN if active else EMPTY
+            col = track_color(tr["state"], tr["muted"], tr["reversed"], active)
+            has_loop = tr["state"] in (ST_PLAY, ST_DUB)
             if i:
                 c.create_line(cx0, y0, cx0, y1, fill="#1c1c1c", width=1)
             r = min(cw * 0.2, hh * 0.09)
-            self._pie(mid, y0 + r + 2, r, col, 0.0, outline_only=True)
-            self._text(mid, y0 + r + 2, str(i + 1), r * 1.3, r * 1.3, GREEN if active else DIM)
+            self._pie(mid, y0 + r + 2, r, col, tr["pos"] if has_loop else 0.0, empty=not has_loop)
+            self._text(mid, y0 + r + 2, str(i + 1), r * 1.3, r * 1.3, TEXT if has_loop else col)
             # кнопка M
             by0 = y0 + r * 2 + hh * 0.05
             bs = min(cw * 0.3, hh * 0.13)
-            c.create_rectangle(mid - bs / 2, by0, mid + bs / 2, by0 + bs, fill=mix(col, BG, 0.3), width=0)
+            mcol = GRAY if tr["muted"] else mix(col, BG, 0.3)
+            c.create_rectangle(mid - bs / 2, by0, mid + bs / 2, by0 + bs, fill=mcol, width=0)
             self._text(mid, by0 + bs / 2, "M", bs * 0.8, bs * 0.8, TEXT)
             # сдвоенный фейдер: две колонки сегментов, белая ручка на 0 дБ
             fy0, fy1 = by0 + bs + hh * 0.06, y1 - 4
@@ -282,25 +444,72 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             c.create_rectangle(mid - cw * 0.2, ky - 7, mid + cw * 0.2, ky + 7, fill=TEXT, width=0)
         self._master(x1 - master_w, y0, x1 - 4, y1)
 
+    def _settings(self, x0, y0, x1, y1):
+        """Настройки: две колонки, в строке подпись и значение со стрелками ◀ ▶ по краям."""
+        c = self.widget_canvas
+        cols, rows = 2, (len(SETTINGS) + 1) // 2
+        gap = max(4, int((x1 - x0) * 0.012))
+        cw = (x1 - x0 - gap * 3) / cols
+        rh = (y1 - y0) / rows
+        for k, (sym, label, values, fmt) in enumerate(SETTINGS):
+            col, row = k // rows, k % rows
+            cx0 = x0 + gap + col * (cw + gap)
+            ry0 = y0 + row * rh
+            ry1 = ry0 + rh - max(2, rh * 0.08)
+            cy = (ry0 + ry1) / 2
+            v = self._zval(sym)
+            c.create_rectangle(cx0, ry0, cx0 + cw, ry1, fill="#141414", width=0)
+            self._text(cx0 + cw * 0.03, cy, label, cw * 0.36, (ry1 - ry0) * 0.5, DIM, "w")
+            # значение и стрелки: левая половина уменьшает, правая увеличивает
+            vx0, vx1 = cx0 + cw * 0.42, cx0 + cw
+            aw = (ry1 - ry0) * 0.9
+            changed = v != SETTING_DEFAULTS.get(sym, v)
+            try:
+                text = fmt(v)
+            except Exception:
+                text = str(v)
+            self._text((vx0 + vx1) / 2, cy, text, (vx1 - vx0) - aw * 2.2, (ry1 - ry0) * 0.62,
+                       GREEN if changed else TEXT)
+            ah = (ry1 - ry0) * 0.22
+            ax = vx0 + aw * 0.5
+            c.create_polygon(ax + ah * 0.6, cy - ah, ax + ah * 0.6, cy + ah, ax - ah * 0.6, cy, fill="#9a9a9a")
+            ax = vx1 - aw * 0.5
+            c.create_polygon(ax - ah * 0.6, cy - ah, ax - ah * 0.6, cy + ah, ax + ah * 0.6, cy, fill="#9a9a9a")
+            mid = (vx0 + vx1) / 2
+            self.hits.append((vx0, ry0, mid, ry1, "step", (sym, values, -1)))
+            self.hits.append((mid, ry0, vx1, ry1, "step", (sym, values, 1)))
+
     def _tabs(self, st, x0, y0, x1, y1, now):
-        """Три вкладки снизу, как подписи педалей у Aeros."""
+        """Три вкладки снизу, как у Aeros: парт, дорожка и что сделает следующее нажатие Rec."""
         c = self.widget_canvas
         gap = 4
         tw = (x1 - x0 - gap * 2) / 3.0
-        label, col = ACTIONS[st["act"]]
-        if now >= self.action_until:
-            col = mix(col, BG, 0.45) if st["act"] else DIM
-        items = [("PART %d" % (st["part"] + 1), GREEN),
-                 ("TRACK %d" % (st["track"] + 1), GREEN),
-                 (label, col)]
+        if now < self.action_until and st["act"]:
+            hint, hcol = ACTIONS[st["act"]]
+        else:
+            hint, hcol = self._rec_hint(st)
+        if self.settings_open:
+            items = [("SETTINGS", TEXT), ("TAP ◀ ▶ TO CHANGE", DIM), ("⚙ CLOSE", GREEN)]
+        else:
+            items = [("PART %d" % (st["part"] + 1), GREEN),
+                     ("TRACK %d" % (st["track"] + 1), GREEN),
+                     (hint, hcol)]
         for k, (text, color) in enumerate(items):
             tx0 = x0 + k * (tw + gap)
             c.create_rectangle(tx0, y0, tx0 + tw, y1, fill=TAB, width=0)
             self._text(tx0 + tw / 2, (y0 + y1) / 2, text, tw * 0.9, (y1 - y0) * 0.78, color)
+        if self.settings_open:
+            self.hits.append((x0 + 2 * (tw + gap), y0, x1, y1, "gear", None))
 
-
-def mix(c1, c2, f):
-    """Смесь цветов: f=0 -> c1, f=1 -> c2."""
-    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
-    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
-    return "#%02x%02x%02x" % tuple(int(x + (y - x) * f) for x, y in zip(a, b))
+    def _rec_hint(self, st):
+        """Подсказка, что сделает педаль Rec на активной дорожке (как подписи педалей Aeros)."""
+        s = st["tracks"][st["track"]]["state"]
+        if s == ST_EMPTY:
+            return "RECORD", RED
+        if s == ST_ARMED:
+            return "WAIT BAR", RED
+        if s == ST_REC:
+            return ("OVERDUB", ORANGE) if st["rop"] else ("PLAY", BLUE)
+        if s == ST_PLAY:
+            return "OVERDUB", ORANGE
+        return "PLAY", BLUE
