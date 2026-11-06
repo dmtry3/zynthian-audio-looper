@@ -113,7 +113,7 @@ def lin_to_frac(v):
 # Состояния дорожки (порт o_stN, как TrackView::state в core/looper.h)
 ST_EMPTY, ST_ARMED, ST_REC, ST_PLAY, ST_DUB = range(5)
 ACTION_HOLD_S = 1.5     # сколько подпись последнего действия горит вместо подсказки
-FLASH_S = 0.12          # вспышка полосы темпа на сильной доле
+FLASH_S = 0.2           # вспышка полосы темпа на сильной доле: ярко и гаснет
 FONT_PREFS = ("DejaVu Sans Condensed", "DejaVu Sans", "Liberation Sans Narrow", "Liberation Sans")
 
 # Настройки: (символ LV2-параметра, подпись, список значений, как показать значение)
@@ -531,8 +531,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
     def _tempo_bar(self, st, x0, y0, x1, y1, now):
         c = self.widget_canvas
         hh, w = y1 - y0, x1 - x0
-        if now < self.flash_until:
-            c.create_rectangle(x0, y0, x1, y1, fill="#303030", width=0)
+        if now < self.flash_until:  # вспышка: сразу светло-серый, гаснет к чёрному
+            v = int(24 + 120 * (self.flash_until - now) / FLASH_S)
+            c.create_rectangle(x0, y0, x1, y1, fill="#%02x%02x%02x" % (v, v, v), width=0)
         cy = (y0 + y1) / 2
         if st["src"]:
             bpm = st["bpm"]
