@@ -288,6 +288,7 @@ static void test_quantize() {
     Sim s(64, true);
     s.ti.rolling = true;
     s.in_l = sine(200.0, 0.3f);
+    s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
     s.cmd(Cmd::Rec);
     s.run(BAR);                      // ждём черту
     CHECK(s.v().state == 2);
@@ -302,6 +303,7 @@ static void test_quantize() {
     Sim s(64, true);
     s.ti.rolling = true;
     s.in_l = sine(200.0, 0.3f);
+    s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
     s.cmd(Cmd::Rec);
     s.run(BAR);
     s.run(BAR + 4800);
@@ -317,6 +319,7 @@ static void test_quantize() {
     s.set.rop = true;
     s.apply();
     s.in_l = sine(200.0, 0.3f);
+    s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
     s.cmd(Cmd::Rec);
     s.run(BAR);
     s.run((uint64_t)(BAR * 1.3));
@@ -435,6 +438,7 @@ static void test_reverse_quantized() {
   s.set.length[0] = 1;
   s.apply();
   s.in_l = sine(180.0, 0.4f);
+  s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
   s.cmd(Cmd::Rec);
   s.run(BAR * 2 + BLOCK * 8);  // ждём такт, пишем 1 такт (+ хвост стыка): цикл начинается на черте
   CHECK(s.v().state == 3);
@@ -474,6 +478,7 @@ static void test_transport_restart_resync() {
   s.set.length[0] = 1;
   s.apply();
   s.in_l = sine(180.0, 0.4f);
+  s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
   s.cmd(Cmd::Rec);
   s.run(BAR * 2 + BLOCK * 8);  // запись с 1-го такта, 1 такт (+ хвост стыка)
   s.in_l = [](uint64_t) { return 0.0f; };
@@ -507,6 +512,7 @@ static void test_transport_stop_start() {
   s.set.length[0] = 1;
   s.apply();
   s.in_l = sine(180.0, 0.4f);
+  s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
   s.cmd(Cmd::Rec);
   s.run(BAR * 2 + BLOCK * 8);
   s.in_l = [](uint64_t) { return 0.0f; };
@@ -543,6 +549,7 @@ static void test_play_stop() {
   s.set.length[0] = 1;
   s.apply();
   s.in_l = sine(180.0, 0.4f);
+  s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
   s.cmd(Cmd::Rec);
   s.run(BAR * 2 + BLOCK * 8);
   s.in_l = [](uint64_t) { return 0.0f; };
@@ -625,6 +632,134 @@ static void test_peaks() {
   CHECK(pk.sum.mx[100] == 0);
 }
 
+// Парты и Lock (этап 2).
+static void test_parts_lock() {
+  const uint64_t BAR = 96000;
+  Sim s(64, true);
+  s.ti.rolling = true;
+  s.set.length[0] = s.set.length[1] = 1;
+  s.apply();
+  auto at = [&](double bars) { s.run((uint64_t)std::llround(bars * BAR) - s.t); };
+  // дорожка 1: синус 180 Гц, 1 такт с 1-го такта; Lock
+  s.in_l = sine(180.0, 0.4f);
+  s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
+  s.cmd(Cmd::Rec);
+  at(2.0 + 0.02);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.cmd(Cmd::Lock);
+  CHECK(s.v(0).locked);
+  // дорожка 2: синус 300 Гц, со 2-го такта
+  s.cmd(Cmd::TrackNext);
+  s.in_l = sine(300.0, 0.3f);
+  s.cmd(Cmd::Rec);
+  at(3.0 + 0.02);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  at(4.0);
+  CHECK(s.v(0).state == 3 && s.v(1).state == 3 && s.lp->parts_mask() == 1u);
+  at(5.0);
+  const uint32_t free_before = s.lp->free_chunks();
+  // переход в пустой парт 2 посреди такта: ждёт черты
+  at(5.25);
+  s.cmd(Cmd::PartNext);
+  CHECK(s.lp->pending_part() == 1 && s.lp->part() == 0);
+  at(5.9);
+  CHECK(s.lp->part() == 0);
+  at(6.0 + 0.01);
+  CHECK(s.lp->part() == 1 && s.lp->pending_part() == -1);
+  const std::vector<float> ref0 = s.slice(5 * BAR, BAR);  // звук парта 1 за последний такт перед переходом
+  CHECK(s.v(0).state == 3 && s.v(0).locked);  // Lock-дорожка перешла
+  CHECK(s.v(1).state == 0);                   // остальные — нет
+  CHECK(s.lp->active() == 1);                 // активная — первая свободная
+  CHECK(s.lp->free_chunks() == free_before);  // копия не тратит память
+  at(6.5);
+  // звучит только дорожка 1, в той же фазе (позиция цикла = t % BAR), без скачка
+  float err = 0;
+  for (uint64_t t = (uint64_t)(6.3 * BAR); t < (uint64_t)(6.5 * BAR); ++t) {
+    const double p = (double)(BAR + t % BAR);
+    err = std::fmax(err, std::fabs(s.out_l[t] - 0.4f * (float)std::sin(PI2 * 180.0 * p / SR)));
+  }
+  CHECK(err < 1e-4f);
+  CHECK(s.max_step(5 * BAR, s.t) < 0.03f);
+  // овердаб на копии: память тратится только на изменённые куски, старый парт не меняется
+  s.cmd(Cmd::TrackPrev);
+  CHECK(s.lp->active() == 0);
+  at(7.0);
+  s.in_l = sine(523.0, 0.2f);
+  s.cmd(Cmd::Rec);
+  at(8.0);
+  s.cmd(Cmd::Rec);
+  at(8.0 + 0.02);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  CHECK(s.v(0).state == 3 && s.v(0).layers == 1);
+  CHECK(s.lp->free_chunks() < free_before);
+  CHECK(s.lp->parts_mask() == 3u);
+  // назад в записанный парт 1: на черте, с начала цикла, без овердаба копии
+  at(8.5);
+  s.cmd(Cmd::PartPrev);
+  at(9.0 + 0.01);
+  CHECK(s.lp->part() == 0 && s.v(0).state == 3 && s.v(1).state == 3);
+  at(11.0);
+  CHECK(rms_diff(s.slice(10 * BAR, BAR), ref0) < 1e-4f);
+  CHECK(s.max_step(8 * BAR, s.t) < 0.05f);
+  // повторный тап переносит цель, вернулись на текущий — отмена
+  s.cmd(Cmd::PartNext);
+  s.cmd(Cmd::PartNext);
+  CHECK(s.lp->pending_part() == 2);
+  s.cmd(Cmd::PartPrev);
+  CHECK(s.lp->pending_part() == 1);
+  s.cmd(Cmd::PartPrev);
+  CHECK(s.lp->pending_part() == -1);
+  s.wav("parts_lock");
+}
+
+// Из пустого парта — сразу; запись закрывается на границе перехода; Lock во время овердаба.
+static void test_parts_edges() {
+  const uint64_t BAR = 96000;
+  {
+    Sim s(64, true);
+    s.cmd(Cmd::PartNext);
+    CHECK(s.lp->part() == 1 && s.lp->pending_part() == -1);
+    s.cmd(Cmd::PartPrev);
+    CHECK(s.lp->part() == 0);
+  }
+  {
+    Sim s(64, true);
+    s.ti.rolling = true;
+    s.in_l = sine(200.0, 0.3f);
+    s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
+    s.cmd(Cmd::Rec);
+    s.run(BAR + BAR / 2);  // пишет с 1-го такта
+    s.cmd(Cmd::PartNext);
+    CHECK(s.lp->pending_part() == 1);
+    s.run(BAR / 2 + BLOCK * 2);
+    CHECK(s.lp->part() == 1);
+    s.cmd(Cmd::PartPrev);  // парт 2 пустой — сразу назад
+    CHECK(s.lp->part() == 0 && s.v(0).state == 3 && std::fabs(s.v(0).len_s - 2.0f) < 1e-3f);
+  }
+  {  // Lock-дорожка в овердабе: копия после затухания овердаба, без щелчка
+    Sim s(64, true);
+    s.ti.rolling = true;
+    s.set.length[0] = 1;
+    s.apply();
+    s.in_l = sine(180.0, 0.4f);
+    s.run(BLOCK);  // мимо сильной доли 0 (пуск транспорта): запись с 1-го такта
+    s.cmd(Cmd::Rec);
+    s.run(2 * BAR + BLOCK * 8);
+    s.cmd(Cmd::Lock);
+    s.in_l = sine(400.0, 0.2f);
+    s.run(BAR / 4);
+    s.cmd(Cmd::Rec);  // овердаб
+    s.run(BAR / 2);
+    s.cmd(Cmd::PartNext);
+    s.run(BAR / 4 + BLOCK * 8);
+    s.in_l = [](uint64_t) { return 0.0f; };
+    CHECK(s.lp->part() == 1 && s.v(0).state == 3 && s.v(0).locked);
+    s.run(BAR);
+    CHECK(rms(s.slice(s.t - BAR / 2, BAR / 2)) > 0.1f);
+    CHECK(s.max_step(2 * BAR, s.t) < 0.05f);
+  }
+}
+
 int main() {
   test_record_play();
   test_overdubs_undo();
@@ -635,6 +770,8 @@ int main() {
   test_transport_stop_start();
   test_play_stop();
   test_peaks();
+  test_parts_lock();
+  test_parts_edges();
   test_quantize();
   test_rop();
   test_reset();

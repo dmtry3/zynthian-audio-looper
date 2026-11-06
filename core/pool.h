@@ -2,6 +2,8 @@
 // Кусок (Chunk) = 16384 стерео-кадра. Буфер (Buf) = таблица кусков: первые 64 в самой таблице,
 // остальные в отдельном куске-таблице. Пустая запись (kNone) читается как тишина.
 // Свободными кусками и буферами распоряжается только аудиопоток: стек без блокировок.
+// У куска счётчик ссылок: копия дорожки (Lock) делит куски с оригиналом и не тратит память,
+// пока в кусок не пишут; запись в общий кусок сначала делает свою копию (copy-on-write).
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -46,10 +48,16 @@ class Pool {
   bool ok() const { return mem_ != nullptr; }
 
   // ---- куски (только аудиопоток) ----
-  uint32_t alloc_chunk() { return top_ ? stack_[--top_] : kNone; }
-  void free_chunk(uint32_t id) {
-    if (id != kNone) stack_[top_++] = id;
+  uint32_t alloc_chunk() {
+    if (!top_) return kNone;
+    uint32_t id = stack_[--top_];
+    ref_[id] = 1;
+    return id;
   }
+  void free_chunk(uint32_t id) {
+    if (id != kNone && --ref_[id] == 0) stack_[top_++] = id;
+  }
+  uint16_t refs(uint32_t id) const { return ref_[id]; }
   Chunk* chunk(uint32_t id) const { return mem_ + id; }
   uint32_t free_chunks() const { return top_; }
   uint32_t total_chunks() const { return n_; }
@@ -70,6 +78,10 @@ class Pool {
   bool set_len(int32_t b, uint64_t len);
   // Кусок номер ci (выделяет при необходимости, zero = заполнить нулями). nullptr, если пул пуст.
   Chunk* ensure(int32_t b, uint32_t ci, bool zero);
+  // То же для записи: общий с другим буфером кусок сначала копируется (copy-on-write).
+  Chunk* writable(int32_t b, uint32_t ci, bool zero);
+  // Новый буфер с теми же кусками (память не копируется). -1, если не хватило буферов.
+  int32_t clone_buf(int32_t b);
   // Сколько кусков занимает буфер.
   uint32_t used_chunks(int32_t b) const;
 
@@ -111,6 +123,7 @@ class Pool {
   Chunk* mem_ = nullptr;
   uint32_t n_ = 0;
   uint32_t* stack_ = nullptr;
+  uint16_t* ref_ = nullptr;
   uint32_t top_ = 0;
   Buf* bufs_ = nullptr;
   int32_t* bstack_ = nullptr;

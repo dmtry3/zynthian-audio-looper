@@ -258,11 +258,15 @@
     ] , [
         a lv2:OutputPort , lv2:ControlPort ;
         lv2:index 51 ; lv2:symbol "o_flags" ; lv2:name "Out: Flags" ;
-        lv2:minimum 0 ; lv2:maximum 1048575 ;
+        lv2:minimum 0 ; lv2:maximum 16777215 ;
     ] , [
         a lv2:OutputPort , lv2:ControlPort ;
         lv2:index 52 ; lv2:symbol "o_pool" ; lv2:name "Out: Pool" ;
         lv2:minimum 0 ; lv2:maximum 1 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 53 ; lv2:symbol "o_parts" ; lv2:name "Out: Parts" ;
+        lv2:minimum 0 ; lv2:maximum 15 ;
     ] .
 
 # Настройки: LV2-параметры (patch:Set), скрыты со страниц, меняются на вкладке настроек виджета.

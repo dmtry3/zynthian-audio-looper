@@ -1,5 +1,5 @@
-// Звуковое ядро лупера (этап 1): 4 стерео-дорожки, запись, овердабы, undo/redo по слою,
-// mute, reverse как лента, Free и Quantize, длина дорожки, RPO и ROP, Reset.
+// Звуковое ядро лупера: 4 парта по 4 стерео-дорожки, запись, овердабы, undo/redo по слою,
+// mute, reverse как лента, Free и Quantize, длина дорожки, RPO и ROP, Reset, парты и Lock.
 // Без LV2. process() и всё с пометкой RT вызываются из аудиопотока: без выделения памяти,
 // блокировок и системных вызовов. do_work() — из рабочего потока (LV2 worker).
 #pragma once
@@ -10,16 +10,20 @@
 
 namespace alp {
 
-constexpr int kTracks = 4;
+constexpr int kSlots = 4;                 // дорожек в парте
+constexpr int kParts = 4;
+constexpr int kTracks = kSlots * kParts;  // дорожка k принадлежит парту k / kSlots
 constexpr uint32_t kMaxUndo = 1024;  // записей undo на дорожку (дальше старые вливаются в основу)
 
-enum class Cmd : uint8_t { Rec, Undo, Redo, ResetTrack, ResetAll, Mute, Reverse, TrackNext, TrackPrev, PlayStop };
+enum class Cmd : uint8_t {
+  Rec, Undo, Redo, ResetTrack, ResetAll, Mute, Reverse, TrackNext, TrackPrev, PlayStop, PartNext, PartPrev, Lock
+};
 
 // Настройки (виджет настроек). Меняются в любой момент, применяются со следующего блока.
 struct Settings {
   bool rop = false;           // false: RPO, true: ROP
   bool quantize = true;       // false: Free
-  int length[kTracks] = {0, 0, 0, 0};  // тактов, 0 = Free
+  int length[kSlots] = {0, 0, 0, 0};  // тактов, 0 = Free (по месту дорожки в парте)
   float fade_out_ms = 200.0f;  // mute
   float fade_in_ms = 200.0f;   // unmute
   float reverse_ms = 50.0f;    // время разворота
@@ -40,7 +44,7 @@ enum class TState : uint8_t { Empty, Armed, Rec, Closing, Play, Dub };
 // Для выходных портов и виджета.
 struct TrackView {
   uint8_t state;     // 0 пусто, 1 ждёт такта, 2 запись, 3 играет, 4 овердаб
-  bool muted, reversed, can_undo, can_redo, stopped;
+  bool muted, reversed, can_undo, can_redo, stopped, locked;
   float pos;         // 0..1 доля цикла
   float len_s;       // длина цикла, с
   uint32_t layers;   // слоёв в undo
@@ -87,8 +91,11 @@ class Looper {
   // рабочий поток
   void do_work(const WorkMsg& m, WorkResp& r);
 
-  // RT: состояние
+  // RT: состояние (view и active — по месту дорожки в текущем парте)
   int active() const { return active_; }
+  int part() const { return cur_part_; }
+  int pending_part() const { return pend_part_; }
+  uint32_t parts_mask() const;  // бит p: в парте p что-то записано
   bool user_stopped() const { return user_stop_; }
   int playstop_pending() const { return ps_pending_; }
   double grid_beats() const { return beats_; }  // доли по сетке лупера (при стоящем транспорте — от первой записи)
@@ -148,6 +155,10 @@ class Looper {
     // пики для волн: поколение суммы, нужен пересчёт, пересчёт идёт, аудиопоток дорисовал
     uint32_t pgen = 0;
     bool pdirty = false, pinflight = false, plive = false;
+    // Lock: пойдёт в следующий пустой парт; lock_to — копия ждёт конца овердаба
+    bool locked = false;
+    int lock_to = -1;
+    bool lock_ready = false;  // овердаб затух: копия делается в начале следующего кадра
   };
 
   // команды
@@ -176,6 +187,13 @@ class Looper {
   void wake(int ti);
   void apply_playstop(bool stop);
   void leave_track(int ti);
+  // парты
+  int idx(int slot) const { return cur_part_ * kSlots + slot; }
+  bool in_cur(int k) const { return k / kSlots == cur_part_; }
+  bool part_has_content(int p) const;
+  void switch_part(int p);
+  void clone_into(int from, int to);
+  void clear_track(int k);
 
   // undo/redo и память
   void push_undo(Track& t, Entry e);
@@ -208,6 +226,10 @@ class Looper {
   bool rolling_ = false;
   bool time_seen_ = false;
   bool user_stop_ = false;  // лупы остановлены педалью Play/Stop
+  bool tstop_ = false;      // лупы затихли из-за остановки транспорта
+  int cur_part_ = 0;
+  int pend_part_ = -1;      // парт, ждущий границы (-1 нет)
+  bool clones_pending_ = false;
   int ps_pending_ = 0;      // ждёт границы: 1 — стоп, 2 — старт
   // рабочий поток: одно задание за раз
   bool job_pending_ = false, job_running_ = false;

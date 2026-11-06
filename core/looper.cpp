@@ -30,19 +30,20 @@ bool Looper::init(double sample_rate, size_t pool_bytes) {
 
 void Looper::command(Cmd c) {
   if (!pool_.ok()) return;
-  Track& t = tr_[active_];
+  const int a = idx(active_);
+  Track& t = tr_[a];
   switch (c) {
-    case Cmd::Rec: rec_press(active_); break;
-    case Cmd::Undo: undo(active_); break;
-    case Cmd::Redo: redo(active_); break;
-    case Cmd::ResetTrack: reset_track(active_); break;
+    case Cmd::Rec: rec_press(a); break;
+    case Cmd::Undo: undo(a); break;
+    case Cmd::Redo: redo(a); break;
+    case Cmd::ResetTrack: reset_track(a); break;
     case Cmd::ResetAll:
       if (job_pending_ || job_running_) reset_all_pending_ = true;
       else reset_all_now();
       break;
     case Cmd::Mute:
       if (t.st != TState::Play && t.st != TState::Dub) break;
-      if (!set_.quantize || set_.mute_q == 0) apply_mute(active_);
+      if (!set_.quantize || set_.mute_q == 0) apply_mute(a);
       else t.mute_pending = !t.mute_pending;
       break;
     case Cmd::Reverse: {
@@ -80,9 +81,24 @@ void Looper::command(Cmd c) {
     }
     case Cmd::TrackNext:
     case Cmd::TrackPrev:
-      leave_track(active_);
-      active_ = (active_ + (c == Cmd::TrackNext ? 1 : kTracks - 1)) % kTracks;
+      leave_track(a);
+      active_ = (active_ + (c == Cmd::TrackNext ? 1 : kSlots - 1)) % kSlots;
       break;
+    case Cmd::PartNext:
+    case Cmd::PartPrev: {
+      const int d = c == Cmd::PartNext ? 1 : kParts - 1;
+      if (pend_part_ >= 0) {  // переход ждёт границы: цель дальше или назад
+        const int np = (pend_part_ + d) % kParts;
+        pend_part_ = np == cur_part_ ? -1 : np;
+        break;
+      }
+      const int target = (cur_part_ + d) % kParts;
+      // из пустого парта и без квантования — сразу
+      if (!part_has_content(cur_part_) || !set_.quantize || set_.mute_q == 0) switch_part(target);
+      else pend_part_ = target;
+      break;
+    }
+    case Cmd::Lock: t.locked = !t.locked; break;
   }
 }
 
@@ -220,8 +236,8 @@ void Looper::start_dub(int ti) {
   t.dub_end = -1;
   t.undo_after_dub = t.reset_after_dub = false;
   t.st = TState::Dub;
-  if (peaks_) {  // волна нового слоя растёт вживую
-    PeakTrack& pk = peaks_->t[ti];
+  if (peaks_ && in_cur(ti)) {  // волна нового слоя растёт вживую
+    PeakTrack& pk = peaks_->t[ti % kSlots];
     clear_wave(pk.dub);
     __atomic_store_n(&pk.dub_active, 1u, __ATOMIC_RELEASE);
     t.plive = true;
@@ -240,7 +256,11 @@ void Looper::finish_dub(int ti) {
   t.dub_end = -1;
   t.st = TState::Play;
   mark_peaks(t);
-  if (peaks_) __atomic_store_n(&peaks_->t[ti].dub_active, 0u, __ATOMIC_RELEASE);
+  if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % kSlots].dub_active, 0u, __ATOMIC_RELEASE);
+  if (t.lock_to >= 0) {  // Lock-копия ждала конца овердаба, чтобы затухание попало и в неё;
+    t.lock_ready = true;  // делаем её в начале следующего кадра (этот кадр уже прозвучал)
+    clones_pending_ = true;
+  }
   if (t.undo_after_dub) {
     t.undo_after_dub = false;
     undo(ti);
@@ -314,10 +334,11 @@ void Looper::reset_track(int ti) {
 void Looper::reset_all_now() {
   user_stop_ = false;
   ps_pending_ = 0;
+  pend_part_ = -1;
   for (int ti = 0; ti < kTracks; ++ti) {
     Track& t = tr_[ti];
     mark_peaks(t);
-    if (peaks_) __atomic_store_n(&peaks_->t[ti].dub_active, 0u, __ATOMIC_RELEASE);
+    if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % kSlots].dub_active, 0u, __ATOMIC_RELEASE);
     if (t.rec >= 0) pool_.free_buf(t.rec);
     if (t.layer >= 0) pool_.free_buf(t.layer);
     t.rec = t.layer = -1;
@@ -349,6 +370,9 @@ void Looper::reset_all_now() {
     t.synced = false;
     t.stopped = t.ustop = false;
     t.sgain = 1.0f;
+    t.locked = false;
+    t.lock_to = -1;
+    t.lock_ready = false;
     t.dub_end = -1;
     t.undo_after_dub = t.reset_after_dub = false;
     t.seam_t = kNoSeam;
@@ -496,7 +520,7 @@ bool Looper::take_work(WorkMsg& m) {
   }
   if (!peaks_) return false;
   // пики: сумма и последние слои овердабов (их номера с начала дорожки — для цвета)
-  for (int k = 0; k < kTracks; ++k) {
+  for (int k = idx(0); k < idx(0) + kSlots; ++k) {
     Track& t = tr_[k];
     if (!t.pdirty || t.pinflight || t.busy) continue;
     m = WorkMsg{};
@@ -546,7 +570,7 @@ void Looper::do_work(const WorkMsg& m, WorkResp& r) {
   r.gen = m.gen;
   if (m.op == 3) {
     if (!peaks_) return;
-    PeakTrack& pk = peaks_->t[m.track];
+    PeakTrack& pk = peaks_->t[m.track % kSlots];
     seq_begin(pk);
     compute_wave(pool_, m.src, m.len, pk.sum);
     for (uint32_t i = 0; i < m.nl; ++i) {
@@ -661,7 +685,7 @@ void Looper::read_sum(const Track& t, int32_t b, double pos, float& l, float& r)
 }
 
 void Looper::write_add(int32_t b, uint64_t p, float l, float r) {
-  Chunk* c = pool_.ensure(b, (uint32_t)(p >> kChunkShift), true);
+  Chunk* c = pool_.writable(b, (uint32_t)(p >> kChunkShift), true);
   if (!c) return;
   c->l[p & kChunkMask] += l;
   c->r[p & kChunkMask] += r;
@@ -691,7 +715,7 @@ void Looper::dub_write(int ti, uint64_t p, float l, float r) {
     c->l[p & kChunkMask] += l * env;
     c->r[p & kChunkMask] += r * env;
     write_add(t.sum, p, l * env, r * env);
-    if (peaks_) live_peaks(ti, p);
+    if (peaks_ && in_cur(ti)) live_peaks(ti, p);
   }
   if (t.dub_end >= 0 && ++t.dub_end >= (int64_t)xf_) finish_dub(ti);
 }
@@ -700,7 +724,7 @@ void Looper::dub_write(int ti, uint64_t p, float l, float r) {
 void Looper::live_peaks(int ti, uint64_t p) {
   Track& t = tr_[ti];
   if (!t.len) return;
-  PeakTrack& pk = peaks_->t[ti];
+  PeakTrack& pk = peaks_->t[ti % kSlots];
   const uint32_t c = (uint32_t)(p * kPeakCols / t.len);
   float l, r;
   pool_.read(pool_.buf(t.sum), p, l, r);
@@ -725,10 +749,17 @@ void Looper::on_grid(bool beat, bool bar) {
     apply_playstop(ps_pending_ == 1);
     ps_pending_ = 0;
   }
+  if (pend_part_ >= 0 && ((set_.mute_q == 1 && beat) || (set_.mute_q >= 2 && bar))) switch_part(pend_part_);
 }
 
 void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
   Track& t = tr_[ti];
+  // Дорожка ушедшего парта: затихает по fade out, потом не обрабатывается.
+  // Lock-копия ждёт конца овердаба — до тех пор старая дорожка звучит.
+  const bool away = !in_cur(ti) && t.lock_to < 0;
+  if (away && t.sgain <= 0.0f && t.xf_len == 0 && t.st != TState::Rec && t.st != TState::Closing &&
+      t.st != TState::Dub)
+    return;
 
   if (t.st == TState::Rec || t.st == TState::Closing) {
     const uint64_t f = t.rec_frames;
@@ -777,7 +808,7 @@ void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
     t.gain = t.gain < target ? std::fmin(target, t.gain + step) : std::fmax(target, t.gain - step);
   }
   // остановка по транспорту: затухает по fade out, входит обратно по fade in
-  const float starget = (t.stopped || t.ustop) ? 0.0f : 1.0f;
+  const float starget = (t.stopped || t.ustop || away) ? 0.0f : 1.0f;
   if (t.sgain != starget) {
     const float ms = starget == 0.0f ? set_.fade_out_ms : set_.fade_in_ms;
     const float step = 1000.0f / ((ms > 1.0f ? ms : 1.0f) * (float)sr_);
@@ -833,20 +864,13 @@ void Looper::set_time(const TimeInfo& ti) {
   const bool started = ti.rolling && !rolling_;
   const bool jumped = ti.rolling && rolling_ && std::fabs(ti.beats - beats_) > 0.05;
   const bool stopped_now = !ti.rolling && rolling_;
-  const bool was_rolling = rolling_;
-  const double prev = beats_;
   rolling_ = ti.rolling;
   if (rolling_) beats_ = ti.beats;  // сетка Zynthian; иначе продолжаем свой счёт
-  // Граница доли пришлась ровно на стык блоков (счёт выровнялся по Zynthian): не потерять её.
-  if (rolling_ && was_rolling && !jumped && time_seen_ && set_.quantize) {
-    const int64_t a = (int64_t)std::floor(prev), c = (int64_t)std::floor(beats_);
-    if (c == a + 1) on_grid(true, ((c % bpb_) + bpb_) % bpb_ == 0);
-  }
   // Транспорт пошёл или перескочил: лупы в Quantize встают в фазу с позицией Zynthian.
   if (time_seen_ && pool_.ok()) {
     if (started) transport_start();
     else if (jumped)
-      for (int k = 0; k < kTracks; ++k) resync(k);
+      for (int k = idx(0); k < idx(0) + kSlots; ++k) resync(k);
     else if (stopped_now) transport_stop();
   }
   time_seen_ = true;
@@ -855,7 +879,8 @@ void Looper::set_time(const TimeInfo& ti) {
 // Транспорт Zynthian остановлен: играющие дорожки плавно затихают (овердаб закрывается).
 // Запись основы не прерывается: лупер считает такты сам.
 void Looper::transport_stop() {
-  for (int k = 0; k < kTracks; ++k) {
+  tstop_ = true;
+  for (int k = idx(0); k < idx(0) + kSlots; ++k) {
     Track& t = tr_[k];
     if (t.st != TState::Play && t.st != TState::Dub) continue;
     if (t.st == TState::Dub) end_dub(k);
@@ -867,7 +892,8 @@ void Looper::transport_stop() {
 // Транспорт пошёл: остановленные дорожки входят обратно в фазе с Zynthian
 // (записанные в Free — с начала цикла), остальные встают в фазу.
 void Looper::transport_start() {
-  for (int k = 0; k < kTracks; ++k) {
+  tstop_ = false;
+  for (int k = idx(0); k < idx(0) + kSlots; ++k) {
     Track& t = tr_[k];
     if (!t.stopped) {
       if (!t.ustop) resync(k);
@@ -901,7 +927,8 @@ void Looper::wake(int ti) {
 // Явный старт запускает и дорожки, остановленные транспортом.
 void Looper::apply_playstop(bool stop) {
   user_stop_ = stop;
-  for (int k = 0; k < kTracks; ++k) {
+  if (!stop) tstop_ = false;
+  for (int k = idx(0); k < idx(0) + kSlots; ++k) {
     Track& t = tr_[k];
     if (t.st != TState::Play && t.st != TState::Dub) continue;
     if (stop) {
@@ -913,6 +940,136 @@ void Looper::apply_playstop(bool stop) {
       wake(k);
     }
   }
+}
+
+// ---------------------------------------------------------------- парты и Lock
+
+bool Looper::part_has_content(int p) const {
+  for (int k = p * kSlots; k < (p + 1) * kSlots; ++k) {
+    const Track& t = tr_[k];
+    if (t.sum >= 0 || t.st == TState::Rec || t.st == TState::Closing) return true;
+  }
+  return false;
+}
+
+uint32_t Looper::parts_mask() const {
+  uint32_t m = 0;
+  for (int p = 0; p < kParts; ++p)
+    if (part_has_content(p)) m |= 1u << p;
+  return m;
+}
+
+// Дорожка становится пустой и без истории (под Lock-копию в пустом парте).
+void Looper::clear_track(int k) {
+  Track& t = tr_[k];
+  if (t.rec >= 0) pool_.free_buf(t.rec);
+  if (t.layer >= 0) pool_.free_buf(t.layer);
+  clear_redo(t);
+  while (t.undo_n) {
+    drop_entry_bufs(t, t.undo[t.undo_lo]);
+    t.undo_lo = (t.undo_lo + 1) % kMaxUndo;
+    --t.undo_n;
+  }
+  if (t.sum >= 0) free_buf_safe(t, t.sum);
+  if (t.xf_from >= 0 && t.xf_owned) pool_.free_buf(t.xf_from);
+  const uint32_t pgen = t.pgen;
+  const bool inflight = t.pinflight;
+  t = Track();
+  t.seam_t = kNoSeam;
+  t.pgen = pgen + 1;
+  t.pdirty = true;
+  t.pinflight = inflight;
+}
+
+// Lock-копия: новая дорожка делит куски памяти с оригиналом (copy-on-write) и продолжает
+// с той же позиции в тот же сэмпл, а оригинал замолкает — шва нет. История копии с нуля.
+void Looper::clone_into(int from, int to) {
+  Track& o = tr_[from];
+  if (o.sum < 0 || tr_[to].busy) return;
+  clear_track(to);
+  const int32_t b = pool_.clone_buf(o.sum);
+  if (b < 0) return;
+  Track& n = tr_[to];
+  n.st = TState::Play;
+  n.sum = b;
+  n.len = o.len;
+  n.pos = o.pos;
+  n.rate = o.rate;
+  n.dir = o.dir;
+  n.rate_step = o.rate_step;
+  n.rev_wait = o.rev_wait;
+  n.rev_n = o.rev_n;
+  n.synced = o.synced;
+  n.rec_q = o.rec_q;
+  n.b0 = o.b0;
+  n.loop_beats = o.loop_beats;
+  n.rec_bpf = o.rec_bpf;
+  n.muted = o.muted;
+  n.mute_pending = o.mute_pending;
+  n.gain = o.gain;
+  n.stopped = o.stopped;
+  n.ustop = o.ustop;
+  n.sgain = o.sgain;
+  n.locked = true;
+  o.sgain = 0.0f;  // звук продолжает копия
+  o.rev_wait = -1;
+  o.mute_pending = false;
+}
+
+// Переход в парт p. Пустой парт: дорожки с Lock продолжают там же в той же фазе,
+// остальные затихают, активной становится первая свободная. Записанный парт:
+// его лупы начинают с начала цикла, старый парт затихает. Запись и овердаб закрываются.
+void Looper::switch_part(int p) {
+  if (p == cur_part_ || p < 0 || p >= kParts) return;
+  const int old = cur_part_;
+  pend_part_ = -1;
+  for (int i = 0; i < kSlots; ++i) {
+    const int k = old * kSlots + i;
+    Track& t = tr_[k];
+    if (t.st == TState::Armed) t.st = TState::Empty;
+    else if (t.st == TState::Rec) request_close(k);
+    else if (t.st == TState::Dub) end_dub(k);
+    t.mute_pending = false;
+  }
+  const bool empty_target = !part_has_content(p);
+  cur_part_ = p;
+  if (empty_target) {
+    int first_free = -1;
+    for (int i = 0; i < kSlots; ++i) {
+      const int o = old * kSlots + i, n = p * kSlots + i;
+      Track& ot = tr_[o];
+      if (ot.locked && ot.sum >= 0 && (ot.st == TState::Play || ot.st == TState::Dub)) {
+        if (ot.st == TState::Dub) ot.lock_to = n;  // копия после затухания овердаба
+        else clone_into(o, n);
+      } else if (first_free < 0) {
+        first_free = i;
+      }
+    }
+    active_ = first_free >= 0 ? first_free : 0;
+  } else {
+    for (int i = 0; i < kSlots; ++i) {
+      const int k = p * kSlots + i;
+      Track& t = tr_[k];
+      if (t.sum < 0 || (t.st != TState::Play && t.st != TState::Dub)) continue;
+      t.pos = t.dir > 0 ? 0.0 : (double)(t.len - 1);
+      t.rate = (double)t.dir;
+      t.rate_step = 0.0;
+      t.rev_wait = -1;
+      t.mute_pending = false;
+      t.stopped = tstop_;
+      t.ustop = user_stop_;
+      t.sgain = (t.stopped || t.ustop) ? 0.0f : 1.0f;
+      if (t.xf_from >= 0 && t.xf_owned) pool_.free_buf(t.xf_from);
+      t.xf_from = -1;  // короткий fade in от начала цикла
+      t.xf_owned = false;
+      t.xf_pos = 0;
+      t.xf_len = xf_;
+      t.xpos = t.pos;
+    }
+  }
+  for (int k = p * kSlots; k < (p + 1) * kSlots; ++k) mark_peaks(tr_[k]);
+  if (peaks_)
+    for (int i = 0; i < kSlots; ++i) __atomic_store_n(&peaks_->t[i].dub_active, 0u, __ATOMIC_RELEASE);
 }
 
 void Looper::resync(int ti) {
@@ -941,14 +1098,23 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
   set_time(ti);
   const float dry = set_.dry;
   for (uint32_t i = 0; i < n; ++i) {
-    const double b0 = beats_;
-    beats_ += bpf_;
+    // beats_ — доля этого кадра; граница там, где доля перешла через целое с прошлого кадра
     if (set_.quantize) {
-      const int64_t a = (int64_t)std::floor(b0), c = (int64_t)std::floor(beats_);
+      const int64_t a = (int64_t)std::floor(beats_ - bpf_), c = (int64_t)std::floor(beats_);
       if (a != c) on_grid(true, ((c % bpb_) + bpb_) % bpb_ == 0);
     } else {
       for (int k = 0; k < kTracks; ++k)
         if (tr_[k].st == TState::Armed) start_rec(k);
+    }
+    if (clones_pending_) {
+      clones_pending_ = false;
+      for (int k = 0; k < kTracks; ++k)
+        if (tr_[k].lock_ready) {
+          const int to = tr_[k].lock_to;
+          tr_[k].lock_ready = false;
+          tr_[k].lock_to = -1;
+          clone_into(k, to);
+        }
     }
     const float il = in_l ? in_l[i] : 0.0f;
     const float ir = in_r ? in_r[i] : 0.0f;
@@ -957,11 +1123,12 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
       for (int k = 0; k < kTracks; ++k) track_sample(k, il, ir, ol, orr);
     if (out_l) out_l[i] = ol + dry * il;
     if (out_r) out_r[i] = orr + dry * ir;
+    beats_ += bpf_;
   }
   if (peaks_)  // виджет перечитает дорисованные колонки
-    for (int k = 0; k < kTracks; ++k)
+    for (int k = idx(0); k < idx(0) + kSlots; ++k)
       if (tr_[k].plive) {
-        __atomic_add_fetch(&peaks_->t[k].live, 1u, __ATOMIC_RELEASE);
+        __atomic_add_fetch(&peaks_->t[k % kSlots].live, 1u, __ATOMIC_RELEASE);
         tr_[k].plive = false;
       }
 }
@@ -969,7 +1136,7 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
 // ---------------------------------------------------------------- состояние
 
 TrackView Looper::view(int i) const {
-  const Track& t = tr_[i];
+  const Track& t = tr_[idx(i)];
   TrackView v{};
   switch (t.st) {
     case TState::Empty: v.state = 0; break;
@@ -981,6 +1148,7 @@ TrackView Looper::view(int i) const {
   }
   v.muted = t.muted;
   v.stopped = t.stopped || t.ustop;
+  v.locked = t.locked;
   v.reversed = t.dir < 0;
   v.can_undo = t.undo_n > 0 || t.st == TState::Dub;
   v.can_redo = t.redo_n > 0;

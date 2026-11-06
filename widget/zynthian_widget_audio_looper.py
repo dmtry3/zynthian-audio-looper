@@ -272,6 +272,13 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         self._meter(mid - mw * 1.15, y0 + lab_h * 1.4, mid - mw * 0.15, y1)
         self._meter(mid + mw * 0.15, y0 + lab_h * 1.4, mid + mw * 1.15, y1)
 
+    def _lock_icon(self, cx, cy, r):
+        """Значок замка (Lock): дужка и корпус."""
+        c = self.widget_canvas
+        c.create_arc(cx - r * 0.55, cy - r * 1.0, cx + r * 0.55, cy + r * 0.1, start=0, extent=180,
+                     style="arc", outline=ORANGE, width=max(2, int(r * 0.28)))
+        c.create_rectangle(cx - r * 0.8, cy - r * 0.35, cx + r * 0.8, cy + r * 0.75, fill=ORANGE, width=0)
+
     def _gear(self, cx, cy, r, color):
         """Значок шестерёнки: зубцы и кольцо."""
         c = self.widget_canvas
@@ -322,6 +329,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             "track": int(m.get("o_track", 0)) % 4,
             "part": int(m.get("o_part", 0)) % 4,
             "pend": int(m.get("o_pend", -1)),
+            "parts": int(m.get("o_parts", 0)),
             "widget": int(m.get("o_widget", 0)),
             "quantize": self._zval("mode") == 1,
             "rop": self._zval("rec_order") == 1,
@@ -335,6 +343,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                 "muted": bool(flags >> i & 1),
                 "reversed": bool(flags >> (4 + i) & 1),
                 "stopped": bool(flags >> (16 + i) & 1),
+                "locked": bool(flags >> (20 + i) & 1),
             })
         if not 0 <= st["act"] < len(ACTIONS):
             st["act"] = 0
@@ -422,16 +431,21 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             tr = st["tracks"][i]
             ry0, ry1 = y0 + i * row_h, y0 + (i + 1) * row_h
             cy = (ry0 + ry1) / 2
-            # точка парта (строка i = парт i), как столбик точек у Aeros
+            # точка парта (строка i = парт i), как столбик точек у Aeros:
+            # пустой — контур, записанный — заливка, текущий — зелёный, ожидающий — мигает
             px = x0 + part_w / 2
-            pr = row_h * 0.1
-            if i == st["part"]:
-                s = row_h * 0.19
-                c.create_rectangle(px - s, cy - s, px + s, cy + s, outline=DIM, width=1)
-                c.create_oval(px - pr, cy - pr, px + pr, cy + pr, fill=GREEN, width=0)
-            elif not (i == st["pend"] and not blink):
-                col = GREEN if i == st["pend"] else DIM
-                c.create_oval(px - pr, cy - pr, px + pr, cy + pr, outline=col, width=max(1, int(pr * 0.35)))
+            pr = row_h * 0.11
+            recorded = bool(st["parts"] >> i & 1)
+            current, pending = i == st["part"], i == st["pend"]
+            if current:
+                sq = row_h * 0.2
+                c.create_rectangle(px - sq, cy - sq, px + sq, cy + sq, outline=DIM, width=1)
+            col = GREEN if (current or pending) else ("#b0b0b0" if recorded else DIM)
+            if not (pending and not blink):
+                if recorded or current:
+                    c.create_oval(px - pr, cy - pr, px + pr, cy + pr, fill=col, width=0)
+                else:
+                    c.create_oval(px - pr, cy - pr, px + pr, cy + pr, outline=col, width=max(1, int(pr * 0.35)))
             # цвет дорожки по приоритету из ТЗ; ожидание такта мигает красным
             active = i == st["track"]
             state = tr["state"]
@@ -448,6 +462,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             self._pie(pcx, pcy, pie_r, color, frac, empty=not (has_loop or state == ST_REC))
             num_col = TEXT if (has_loop or state == ST_REC) else (GREEN if active else DIM)
             self._text(pcx, pcy, str(i + 1), pie_r * 1.3, pie_r * 1.3, num_col)
+            if tr["locked"]:
+                self._lock_icon(pcx + pie_r * 1.05, ry0 + row_h * 0.26, row_h * 0.11)
             self._text(pcx, ry0 + row_h * 0.87, "1.00×", row_h * 0.8, row_h * 0.22, DIM, bold=False)
             # волна цикла: сумма цветом дорожки (сыгранное ярче), слои овердабов полупрозрачно поверх
             wx0 = x0 + part_w + row_h * 0.9
@@ -681,7 +697,10 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         if self.settings_open:
             items = [("SETTINGS", TEXT), ("TAP ◀ ▶ TO CHANGE", DIM), ("⚙ CLOSE", GREEN)]
         else:
-            items = [("PART %d" % (st["part"] + 1), GREEN),
+            part_txt = "PART %d" % (st["part"] + 1)
+            if st["pend"] >= 0:
+                part_txt += " \u2192 %d" % (st["pend"] + 1)
+            items = [(part_txt, GREEN),
                      ("TRACK %d" % (st["track"] + 1), GREEN),
                      (hint, hcol)]
         for k, (text, color) in enumerate(items):

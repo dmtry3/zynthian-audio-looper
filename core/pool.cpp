@@ -11,9 +11,10 @@ bool Pool::init(size_t bytes, uint32_t max_bufs) {
   if (n < 16 || n > 0x7FFFFFFFu || max_bufs < 4) return false;
   mem_ = static_cast<Chunk*>(std::aligned_alloc(64, (size_t)n * sizeof(Chunk)));
   stack_ = new (std::nothrow) uint32_t[n];
+  ref_ = new (std::nothrow) uint16_t[n]();
   bufs_ = new (std::nothrow) Buf[max_bufs];
   bstack_ = new (std::nothrow) int32_t[max_bufs];
-  if (!mem_ || !stack_ || !bufs_ || !bstack_) {
+  if (!mem_ || !stack_ || !ref_ || !bufs_ || !bstack_) {
     release();
     return false;
   }
@@ -34,10 +35,12 @@ bool Pool::init(size_t bytes, uint32_t max_bufs) {
 void Pool::release() {
   std::free(mem_);
   delete[] stack_;
+  delete[] ref_;
   delete[] bufs_;
   delete[] bstack_;
   mem_ = nullptr;
   stack_ = nullptr;
+  ref_ = nullptr;
   bufs_ = nullptr;
   bstack_ = nullptr;
   n_ = top_ = nbufs_ = btop_ = 0;
@@ -115,6 +118,37 @@ Chunk* Pool::ensure(int32_t bi, uint32_t ci, bool zero) {
     if (zero) std::memset(chunk(id), 0, sizeof(Chunk));
   }
   return chunk(id);
+}
+
+Chunk* Pool::writable(int32_t bi, uint32_t ci, bool zero) {
+  Buf& b = bufs_[bi];
+  uint32_t id = entry(b, ci);
+  if (id == kNone || ref_[id] <= 1) return ensure(bi, ci, zero);
+  uint32_t nid = alloc_chunk();  // кусок общий: своя копия
+  if (nid == kNone) return nullptr;
+  std::memcpy(chunk(nid), chunk(id), sizeof(Chunk));
+  set_entry(b, ci, nid);
+  free_chunk(id);
+  return chunk(nid);
+}
+
+int32_t Pool::clone_buf(int32_t bi) {
+  int32_t c = alloc_buf();
+  if (c < 0) return -1;
+  const Buf& src = bufs_[bi];
+  Buf& dst = bufs_[c];
+  for (uint32_t i = 0; i < src.nent; ++i) {
+    uint32_t id = entry(src, i);
+    if (!set_entry(dst, i, id)) {  // не хватило куска под таблицу
+      dst.nent = i;
+      free_buf(c);
+      return -1;
+    }
+    if (id != kNone) ++ref_[id];
+    dst.nent = i + 1;
+  }
+  dst.len = src.len;
+  return c;
 }
 
 uint32_t Pool::used_chunks(int32_t bi) const {

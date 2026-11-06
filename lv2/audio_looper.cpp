@@ -51,7 +51,7 @@ enum Port : uint32_t {
   O_ST1, O_ST2, O_ST3, O_ST4,
   O_POS1, O_POS2, O_POS3, O_POS4,
   O_LEN1, O_LEN2, O_LEN3, O_LEN4,
-  O_FLAGS, O_POOL,
+  O_FLAGS, O_POOL, O_PARTS,
   P_COUNT
 };
 
@@ -122,7 +122,7 @@ struct Plugin {
   TempoClock clock;
   MidiClock midi_clock;
   uint64_t now = 0;  // сэмплов от старта плагина
-  int part = 0, widget = 0;
+  int widget = 0;
   int last_action = A_NONE;
   uint32_t action_count = 0;
   int32_t vals[PR_COUNT];
@@ -138,7 +138,7 @@ struct Plugin {
     Settings s;
     s.rop = vals[PR_REC_ORDER] == 1;
     s.quantize = vals[PR_MODE] == 1;
-    for (int i = 0; i < kTracks; ++i) s.length[i] = vals[PR_LEN1 + i];
+    for (int i = 0; i < kSlots; ++i) s.length[i] = vals[PR_LEN1 + i];
     s.fade_out_ms = (float)vals[PR_FADE_OUT];
     s.fade_in_ms = (float)vals[PR_FADE_IN];
     s.reverse_ms = (float)vals[PR_REV];
@@ -217,8 +217,6 @@ void handle_midi(Plugin* pl, const uint8_t* b, uint32_t size, uint64_t t) {
   pl->clock.apply_external(m);
 }
 
-int wrap4(int v) { return (v % 4 + 4) % 4; }
-
 void do_action(Plugin* pl, Action a) {
   Looper* lp = pl->looper;
   switch (a) {
@@ -233,12 +231,12 @@ void do_action(Plugin* pl, Action a) {
     case A_TRK_NEXT: lp->command(Cmd::TrackNext); break;
     case A_TRK_PREV: lp->command(Cmd::TrackPrev); break;
     case A_PLAY: lp->command(Cmd::PlayStop); break;
-    // Парты появятся на этапе 2; пока все пустые, а из пустого парта переход сразу (ТЗ).
-    case A_PART_NEXT: pl->part = wrap4(pl->part + 1); break;
-    case A_PART_PREV: pl->part = wrap4(pl->part - 1); break;
+    case A_LOCK: lp->command(Cmd::Lock); break;
+    case A_PART_NEXT: lp->command(Cmd::PartNext); break;
+    case A_PART_PREV: lp->command(Cmd::PartPrev); break;
     case A_W_LOOP: pl->widget = 0; break;
     case A_W_MIXER: pl->widget = 1; break;
-    default: break;  // Lock — этап 2
+    default: break;
   }
   pl->last_action = a;
   ++pl->action_count;
@@ -328,7 +326,7 @@ LV2_Handle instantiate(const LV2_Descriptor*, double rate, const char*, const LV
         pl->peaks = static_cast<PeakShm*>(mem);
         std::memset(pl->peaks, 0, sizeof(PeakShm));
         pl->peaks->ncols = kPeakCols;
-        pl->peaks->ntracks = kTracks;
+        pl->peaks->ntracks = kSlots;
         pl->peaks->nlayers = kPeakLayers;
         pl->peaks->magic = kPeakMagic;
         pl->looper->set_peaks(pl->peaks);
@@ -409,8 +407,9 @@ void run(LV2_Handle h, uint32_t n) {
   const double bar = std::floor(gb / bpb);
   int src = pl->clock.messages() > 0 ? SRC_POSITION : (pl->midi_clock.active(pl->now) ? SRC_CLOCK : SRC_NONE);
   pl->out(O_TRACK, (float)lp->active());
-  pl->out(O_PART, (float)pl->part);
-  pl->out(O_PEND, -1.0f);
+  pl->out(O_PART, (float)lp->part());
+  pl->out(O_PEND, (float)lp->pending_part());
+  pl->out(O_PARTS, (float)lp->parts_mask());
   pl->out(O_WIDGET, (float)pl->widget);
   pl->out(O_ACTION, (float)pl->last_action);
   pl->out(O_ACT_CNT, (float)(pl->action_count % 1000000));
@@ -424,7 +423,7 @@ void run(LV2_Handle h, uint32_t n) {
   pl->out(O_CLK_BPM, (float)pl->midi_clock.bpm());
   pl->out(O_POS_CNT, (float)(pl->clock.messages() % 1000000));
   uint32_t flags = 0;
-  for (int i = 0; i < kTracks; ++i) {
+  for (int i = 0; i < kSlots; ++i) {
     TrackView v = lp->view(i);
     pl->out(O_ST1 + i, (float)v.state);
     pl->out(O_POS1 + i, v.pos);
@@ -434,6 +433,7 @@ void run(LV2_Handle h, uint32_t n) {
     if (v.can_undo) flags |= 1u << (8 + i);
     if (v.can_redo) flags |= 1u << (12 + i);
     if (v.stopped) flags |= 1u << (16 + i);
+    if (v.locked) flags |= 1u << (20 + i);
   }
   pl->out(O_FLAGS, (float)flags);
   pl->out(O_POOL, lp->pool_fill());

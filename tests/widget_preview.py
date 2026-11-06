@@ -61,7 +61,7 @@ class Engine:
         self.m = {"o_bpm": 120.0, "o_bpb": 4.0, "o_bar": 0.0, "o_beat": 0.0, "o_rolling": 1.0,
                   "o_tsrc": 1.0, "o_clk_bpm": 0.0, "o_pos_cnt": 1.0, "o_action": 0.0,
                   "o_act_cnt": 0.0, "o_held": 0.0, "o_track": 0.0, "o_part": 0.0,
-                  "o_pend": -1.0, "o_widget": 0.0, "o_flags": 0.0, "o_pool": 0.0}
+                  "o_pend": -1.0, "o_widget": 0.0, "o_flags": 0.0, "o_pool": 0.0, "o_parts": 0.0}
         for i in range(1, 5):
             self.m["o_st%d" % i] = 0.0
             self.m["o_pos%d" % i] = 0.0
@@ -275,6 +275,15 @@ def main():
     check("слои овердабов дорожки 1 полупрозрачно поверх", len(stip) == 3 + 1)
     no_overlap("800x480, волны")
     m["o_st1"] = 2.0
+    # парты и Lock: записаны 1 и 3, текущий 1, ждёт 2; дорожка 3 с замком
+    m["o_parts"], m["o_part"], m["o_pend"] = 5.0, 0.0, 1.0
+    m["o_flags"] = float(m["o_flags"]) + float(1 << 22)
+    wdg.update()
+    arcs = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "arc"
+            and wdg.widget_canvas.itemcget(i, "style") == "arc"]
+    check("значок замка на дорожке с Lock", len(arcs) == 1)
+    no_overlap("800x480, парты и Lock")
+    m["o_pend"] = -1.0
     m["o_track"] = 0.0
     m["o_st1"] = 0.0
     wdg.update()
