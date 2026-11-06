@@ -143,7 +143,8 @@ void Looper::start_rec(int ti) {
   t.rec = b;
   t.rec_frames = 0;
   t.rec_target = 0;
-  if (set_.quantize && set_.length[ti] > 0) t.rec_target = (uint64_t)std::llround(set_.length[ti] * (double)bar_frames());
+  const int len_bars = set_.length[ti % kSlots];  // длина задаётся по месту дорожки в парте
+  if (set_.quantize && len_bars > 0) t.rec_target = (uint64_t)std::llround(len_bars * (double)bar_frames());
   // Quantize: запись начинается на черте такта, запоминаем её долю для подстройки фазы
   t.rec_q = set_.quantize;
   t.b0 = std::round(beats_ / bpb_) * bpb_;

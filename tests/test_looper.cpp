@@ -736,6 +736,27 @@ static void test_parts_edges() {
     s.cmd(Cmd::PartPrev);  // парт 2 пустой — сразу назад
     CHECK(s.lp->part() == 0 && s.v(0).state == 3 && std::fabs(s.v(0).len_s - 2.0f) < 1e-3f);
   }
+  {  // во 2-м парте на 2-й дорожке запись закрывается нажатием (длина по месту в парте)
+    Sim s(64, true);
+    s.ti.rolling = true;
+    s.in_l = sine(200.0, 0.3f);
+    s.run(BLOCK);
+    s.cmd(Cmd::Rec);
+    s.run(BAR * 2);
+    s.cmd(Cmd::Rec);   // парт 1, дорожка 1: 1 такт
+    s.run(BAR);
+    s.cmd(Cmd::PartNext);
+    s.run(BAR);
+    CHECK(s.lp->part() == 1);
+    s.cmd(Cmd::TrackNext);
+    CHECK(s.lp->active() == 1);
+    s.cmd(Cmd::Rec);
+    s.run(BAR + BAR / 2);
+    CHECK(s.v(1).state == 2);
+    s.cmd(Cmd::Rec);
+    s.run(BAR);
+    CHECK(s.v(1).state == 3 && std::fabs(s.v(1).len_s - 2.0f) < 1e-3f);
+  }
   {  // Lock-дорожка в овердабе: копия после затухания овердаба, без щелчка
     Sim s(64, true);
     s.ti.rolling = true;
