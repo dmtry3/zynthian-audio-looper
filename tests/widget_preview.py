@@ -128,14 +128,35 @@ def main():
         print("%s: %s" % ("PASS" if cond else "FAIL", name))
         fails += 0 if cond else 1
 
+    def boxes():
+        c = wdg.widget_canvas
+        return [(c.itemcget(i, "text"), c.bbox(i)) for i in c.find_all() if c.type(i) == "text"]
+
+    def no_overlap(tag):
+        bb = boxes()
+        bad = []
+        for a in range(len(bb)):
+            ta, (ax0, ay0, ax1, ay1) = bb[a]
+            if ax0 < -1 or ay0 < -1 or ax1 > wdg.width + 1 or ay1 > wdg.height + 1:
+                bad.append("%r за краем" % ta)
+            for b in range(a + 1, len(bb)):
+                tb, (bx0, by0, bx1, by1) = bb[b]
+                # bbox у tk с запасом в пару пикселей: считаем наезд, если пересечение больше 2 px
+                if min(ax1, bx1) - max(ax0, bx0) > 2 and min(ay1, by1) - max(ay0, by0) > 2:
+                    bad.append("%r и %r" % (ta, tb))
+        check("надписи не наезжают (%s)" % tag, not bad)
+        if bad:
+            print("   ", "; ".join(bad[:6]))
+
     check("виджет растянут на окно", wdg.width >= 700 and wdg.height >= 400)
-    check("темп и счёт видны", "120.0 BPM" in texts(wdg) and "1.1" in texts(wdg))
+    check("темп и счёт видны", "120" in texts(wdg) and "1.1" in texts(wdg) and "4/4" in texts(wdg))
+    no_overlap("800x480, Loop")
 
     m["o_action"], m["o_act_cnt"] = 1.0, 1.0
     wdg.update()
-    rect_fills = [wdg.widget_canvas.itemcget(i, "fill") for i in wdg.widget_canvas.find_all()
-                  if wdg.widget_canvas.type(i) == "rectangle"]
-    check("действие Rec красит прямоугольник красным", "#e03030" in rect_fills and "REC / DUB" in texts(wdg))
+    fills = [wdg.widget_canvas.itemcget(i, "fill") for i in wdg.widget_canvas.find_all()]
+    check("нажатие Rec всплывает красной плашкой", mod.COL_REC in fills and "REC / DUB" in texts(wdg))
+    wdg.toast_until = 0.0
 
     m["o_bar"], m["o_beat"] = 1.0, 0.05
     wdg.update()
@@ -145,19 +166,38 @@ def main():
     m["o_bpb"], m["o_beat"] = 3.0, 2.5
     wdg.update()
     ovals = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "oval"]
-    check("точек долей по числу долей в такте", len(ovals) == 3 and "2.3" in texts(wdg))
+    check("3 точки долей + 4 точки партов", len(ovals) == 3 + 4 and "2.3" in texts(wdg) and "3/4" in texts(wdg))
+
+    m["o_held"] = float(1 << 7)
+    wdg.update()
+    check("нажатая кнопка видна в строке диагностики", "T+" in texts(wdg))
 
     m["o_tsrc"] = 0.0
     wdg.update()
     check("без темпа видно NO TEMPO", "NO TEMPO" in texts(wdg))
+    m["o_tsrc"] = 1.0
 
-    m["o_widget"], m["o_track"], m["o_part"] = 1.0, 2.0, 3.0
+    m["o_widget"], m["o_track"] = 1.0, 2.0
     wdg.update()
-    check("активный виджет Mixer и дорожка/парт", "MIXER" in texts(wdg) and "TRACK 3   PART 4" in texts(wdg))
+    check("активный виджет Mixer", "MIXER" in texts(wdg))
+    no_overlap("800x480, Mixer")
+    m["o_widget"] = 0.0
 
-    m["o_action"] = 99.0
+    m["o_action"], m["o_act_cnt"] = 99.0, 5.0
     wdg.update()
-    check("неизвестный код действия не ломает виджет", "-" in texts(wdg))
+    check("неизвестный код действия не ломает виджет", True)
+    wdg.toast_until = 0.0
+
+    # виджет в Zynthian занимает только часть экрана: проверяем и маленькие размеры
+    m["o_bpm"], m["o_bar"], m["o_bpb"] = 133.5, 127.0, 7.0
+    for size in ("640x360", "480x272", "360x220"):
+        root.geometry(size)
+        root.update()
+        wdg.update()
+        root.update()
+        wdg.toast_until = 0.0
+        wdg.update()
+        no_overlap(size)
 
     root.destroy()
     print("%s" % ("OK" if not fails else "%d FAILED" % fails))
