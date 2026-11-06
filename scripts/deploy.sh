@@ -1,6 +1,6 @@
 #!/bin/bash
-# Запускается в WSL: копирует исходники на Pi, там собирает и ставит, перезапускает Zynthian.
-# Адрес берётся из scripts/deploy.env (образец: scripts/deploy.env.example).
+# Запускается в WSL после git push: на Pi делает git clone или git pull, собирает и ставит,
+# перезапускает Zynthian. Адрес берётся из scripts/deploy.env (образец: scripts/deploy.env.example).
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV="$ROOT/scripts/deploy.env"
@@ -10,14 +10,25 @@ if [ ! -f "$ENV" ]; then
 fi
 source "$ENV"
 : "${PI_HOST:?PI_HOST не задан}" "${PI_USER:?PI_USER не задан}" "${PI_DIR:?PI_DIR не задан}"
+REPO_URL="${REPO_URL:-https://github.com/dmtry3/zynthian-audio-looper.git}"
 DEST="$PI_USER@$PI_HOST"
 SUDO=""
 [ "$PI_USER" != "root" ] && SUDO="sudo"
 
-echo "== Копирую исходники в $DEST:$PI_DIR"
-ssh "$DEST" "mkdir -p '$PI_DIR'"
-rsync -az --delete --exclude .git/ --exclude build/ --exclude build_test/ --exclude tests/out/ \
-      --exclude __pycache__/ --exclude scripts/deploy.env "$ROOT/" "$DEST:$PI_DIR/"
+# На Pi попадёт только то, что лежит на GitHub: проверяем, что всё закоммичено и запушено.
+cd "$ROOT"
+if [ -n "$(git status --porcelain)" ]; then
+    echo "Есть незакоммиченные изменения. Сначала git commit и git push."
+    exit 1
+fi
+git fetch -q origin
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+    echo "Локальная ветка не совпадает с origin/main. Сначала git push."
+    exit 1
+fi
+
+echo "== Обновляю код на $DEST:$PI_DIR"
+ssh "$DEST" "if [ -d '$PI_DIR/.git' ]; then cd '$PI_DIR' && git pull --ff-only; else git clone '$REPO_URL' '$PI_DIR'; fi"
 
 echo "== Собираю и ставлю на Pi"
 ssh "$DEST" "cd '$PI_DIR' && $SUDO ./scripts/install.sh"

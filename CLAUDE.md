@@ -34,7 +34,7 @@ docs/      ТЗ.md
 ## Сборка и установка
 
 - Тесты ядра собираются и запускаются в WSL (x86_64): `make test`.
-- Плагин для Pi 5 собирается на самом Pi через `scripts/deploy.sh`: копирует исходники по ssh (rsync), собирает на Pi, ставит в ту же папку LV2, что и прошлые плагины, кладёт виджет в zynthian-ui и перезапускает Zynthian. Если прошлые плагины собираются по-другому, повтори их способ.
+- Код попадает на Pi через GitHub (`github.com/dmtry3/zynthian-audio-looper`, публичный, ветка `main`), как у прошлых плагинов. После `git push` запускается `scripts/deploy.sh`: по ssh делает на Pi `git clone` или `git pull`, затем `scripts/install.sh` (сборка на Pi, ссылки в `/usr/local/lib/lv2` и `zyngui/widgets_user`) и перезапуск Zynthian. Без deploy.sh на Pi: `git pull && sudo ./scripts/install.sh && sudo systemctl restart zynthian`.
 - Адрес Pi и пользователь берутся из `scripts/deploy.env`. Файл в `.gitignore`.
 - Обновление Zynthian может затереть файл виджета в zynthian-ui. `deploy.sh` должен класть его заново.
 
