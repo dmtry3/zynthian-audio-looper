@@ -1,0 +1,9 @@
+build/
+build_test/
+tests/out/
+dist/
+*.o
+*.so
+__pycache__/
+*.log
+scripts/deploy.env
