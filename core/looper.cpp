@@ -61,11 +61,7 @@ void Looper::command(Cmd c) {
       if (job_pending_ || job_running_) reset_all_pending_ = true;
       else reset_all_now();
       break;
-    case Cmd::Mute:
-      if (t.st != TState::Play && t.st != TState::Dub) break;
-      if (!set_.quantize || set_.mute_q == 0) apply_mute(a);
-      else t.mute_pending = !t.mute_pending;
-      break;
+    case Cmd::Mute: mute_slot(active_); break;
     case Cmd::Reverse: {
       if ((t.st != TState::Play && t.st != TState::Dub) || t.len == 0) break;
       if (t.rev_wait >= 0) {  // повторное нажатие до такта отменяет разворот
@@ -441,6 +437,15 @@ void Looper::mix_matrix(const Mix& m, float out[4]) {
 void Looper::start_reverse(Track& t, double n) {
   t.dir = -t.dir;
   t.rate_step = 2.0 / n * t.dir;
+}
+
+void Looper::mute_slot(int slot) {
+  if (slot < 0 || slot >= kSlots) return;
+  const int k = idx(slot);
+  Track& t = tr_[k];
+  if (t.st != TState::Play && t.st != TState::Dub) return;
+  if (!set_.quantize || set_.mute_q == 0) apply_mute(k);
+  else t.mute_pending = !t.mute_pending;
 }
 
 void Looper::apply_mute(int ti) {

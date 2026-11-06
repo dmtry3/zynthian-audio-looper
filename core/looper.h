@@ -115,6 +115,7 @@ class Looper {
   // микшер (RT): k — дорожка 0..15; mix_epoch растёт, когда ядро меняет микшер само
   // (сброс удержанием Reset, Lock-копия) — обёртка сообщает новые значения хосту
   void set_mix(int k, const Mix& m) { mix_[k] = m; }
+  void mute_slot(int slot);  // mute дорожки текущего парта (кнопка M в виджете Mixer)
   const Mix& mix(int k) const { return mix_[k]; }
   void set_master_db(float db) { master_db_ = db; }
   float master_db() const { return master_db_; }

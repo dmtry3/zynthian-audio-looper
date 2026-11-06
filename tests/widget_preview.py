@@ -76,9 +76,10 @@ class Ctrl:
         self.symbol, self.value, self.lo, self.hi = sym, value, lo, hi
 
     def set_value(self, v, send=True):
-        assert isinstance(v, int), "%s: %r is not int" % (self.symbol, v)
+        assert isinstance(v, (int, float)), "%s: %r is not a number" % (self.symbol, v)
         assert self.lo <= v <= self.hi, "%s: %r out of range" % (self.symbol, v)
         self.value = v
+        self.writes = getattr(self, "writes", 0) + 1
 
 
 class Processor:
@@ -94,6 +95,15 @@ class Processor:
         }
         for i in range(1, 5):
             self.controllers_dict["len%d" % i] = Ctrl("len%d" % i, 0, 0, 16)
+        # микшер (LV2-параметры): 16 дорожек, Dry, Master, ограничитель, команда mute
+        for i in range(1, 17):
+            self.controllers_dict["lev%d" % i] = Ctrl("lev%d" % i, 0.0, -60.0, 6.0)
+            self.controllers_dict["pan%d" % i] = Ctrl("pan%d" % i, 0, -100, 100)
+            self.controllers_dict["chm%d" % i] = Ctrl("chm%d" % i, 0, 0, 1)
+        self.controllers_dict["dry"] = Ctrl("dry", 0.0, -60.0, 6.0)
+        self.controllers_dict["master"] = Ctrl("master", 0.0, -60.0, 6.0)
+        self.controllers_dict["limiter"] = Ctrl("limiter", 1, 0, 1)
+        self.controllers_dict["tmute"] = Ctrl("tmute", 0, 0, 4)
 
 
 class Control:
@@ -315,6 +325,49 @@ def main():
     m["o_widget"] = 0.0
     wdg.update()
 
+    # Mixer: фейдер, двойной тап, панорама, режим канала, M, ограничитель
+    m["o_widget"], m["o_part"], m["o_track"] = 1.0, 1.0, 0.0
+    m["o_pk1"], m["o_mpk_l"], m["o_mpk_r"] = 0.5, 0.7, 0.6
+    wdg.update()
+    no_overlap("800x480, Mixer")
+    cd = proc.controllers_dict
+
+    def hit(kind, arg):
+        return [hh for hh in wdg.hits if hh[4] == kind and hh[5] == arg][0]
+
+    def tap(kind, arg, fx=0.5, fy=0.5):
+        x0, y0, x1, y1 = hit(kind, arg)[:4]
+        ev = types.SimpleNamespace(x=x0 + (x1 - x0) * fx, y=y0 + (y1 - y0) * fy)
+        wdg._on_press(ev)
+        wdg._on_release(ev)
+
+    f = hit("fader", "lev5")  # парт 2, дорожка 1 = lev5
+    wdg._on_press(types.SimpleNamespace(x=(f[0] + f[2]) / 2, y=f[1] + (f[3] - f[1]) * 0.6))
+    wdg._on_motion(types.SimpleNamespace(x=(f[0] + f[2]) / 2, y=f[1] + (f[3] - f[1]) * 0.8))
+    wdg._on_release(None)
+    v = cd["lev5"].value
+    check("фейдер дорожки тянется пальцем (ниже 0 дБ)", -40.0 < v < -3.0)
+    time.sleep(0.4)
+    tap("fader", "lev5", fy=0.9)
+    tap("fader", "lev5", fy=0.9)
+    check("двойной тап по фейдеру — 0 дБ", cd["lev5"].value == 0.0)
+    time.sleep(0.4)
+    tap("pan", "pan6", fx=0.9)
+    check("панорама дорожки 2 вправо", cd["pan6"].value > 60)
+    tap("chm", "chm7")
+    check("режим канала дорожки 3: Раздельно", cd["chm7"].value == 1)
+    wdg.update()
+    check("кнопка SPLIT видна", "SPLIT" in texts(wdg))
+    tap("mute", 2)
+    check("M дорожки 2 — команда tmute=2", cd["tmute"].value == 2)
+    tap("lim", None)
+    check("LIM выключает ограничитель", cd["limiter"].value == 0)
+    tap("fader", "master", fy=0.95)
+    check("фейдер Master", cd["master"].value < -20.0)
+    no_overlap("800x480, Mixer после касаний")
+    m["o_widget"], m["o_part"] = 0.0, 0.0
+    wdg.update()
+
     # виджет в Zynthian занимает только часть экрана: проверяем и маленькие размеры
     m["o_bpm"], m["o_bar"], m["o_bpb"] = 133.5, 127.0, 7.0
     for size in ("640x360", "480x272", "360x220"):
@@ -328,6 +381,10 @@ def main():
         wdg.update()
         no_overlap(size + ", настройки")
         wdg.settings_open = False
+        m["o_widget"] = 1.0
+        wdg.update()
+        no_overlap(size + ", Mixer")
+        m["o_widget"] = 0.0
 
     root.destroy()
     print("%s" % ("OK" if not fails else "%d FAILED" % fails))

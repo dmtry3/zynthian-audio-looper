@@ -88,7 +88,8 @@
         <urn:audiolooper:looper#chm16> ,
         <urn:audiolooper:looper#dry> ,
         <urn:audiolooper:looper#master> ,
-        <urn:audiolooper:looper#limiter> ;
+        <urn:audiolooper:looper#limiter> ,
+        <urn:audiolooper:looper#tmute> ;
     lv2:port
     [
         a lv2:InputPort , lv2:AudioPort ; lv2:index 0 ; lv2:symbol "in_l" ; lv2:name "In L" ;
@@ -905,3 +906,11 @@
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
+<urn:audiolooper:looper#tmute>
+    a lv2:Parameter ;
+    lv2:symbol "tmute" ;
+    rdfs:label "Track Mute" ;
+    rdfs:range atom:Int ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 4 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .

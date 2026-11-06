@@ -96,6 +96,7 @@ enum Param {
   PR_DRY = PR_CHM0 + kTracks,
   PR_MASTER,
   PR_LIMIT,
+  PR_TMUTE,  // команда виджета: mute дорожки 1..4 текущего парта; сам возвращается в 0
   PR_COUNT
 };
 struct ParamDef {
@@ -126,6 +127,7 @@ void init_params() {
   kParams[PR_DRY] = ParamDef{"dry", 0.0f, kMinDb, 6.0f, true};
   kParams[PR_MASTER] = ParamDef{"master", 0.0f, kMinDb, 6.0f, true};
   kParams[PR_LIMIT] = ParamDef{"limiter", 1.0f, 0.0f, 1.0f, false};
+  kParams[PR_TMUTE] = ParamDef{"tmute", 0.0f, 0.0f, 4.0f, false};
 }
 constexpr uint32_t kReportPerRun = 4;  // ответов на patch:Get за один run()
 
@@ -307,6 +309,12 @@ void handle_patch_set(Plugin* pl, const LV2_Atom_Object* obj) {
   int i = find_param(pl, reinterpret_cast<const LV2_Atom_URID*>(prop)->body);
   if (i < 0) return;
   set_param(pl, i, atom_number(pl, val, pl->vals[i]));
+  if (i == PR_TMUTE) {
+    if (pl->vals[i] >= 1.0f) pl->looper->mute_slot((int)pl->vals[i] - 1);
+    pl->vals[i] = 0.0f;
+    pl->dirty[i] = true;
+    return;
+  }
   if (i < PR_LEV0) pl->apply_settings();
   else pl->apply_mix_param(i);
 }

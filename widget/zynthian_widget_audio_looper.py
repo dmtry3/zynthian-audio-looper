@@ -69,6 +69,31 @@ PEAKS_PATH_OVERRIDE = None              # для превью без Zynthian
 # Цвета слоёв овердабов (полупрозрачно поверх волны), по номеру слоя
 LAYER_COLORS = ["#ff6b6b", "#ffd43b", "#69db7c", "#4dabf7", "#da77f2", "#ff922b", "#38d9a9", "#f783ac"]
 FRAME_MS = 33                           # своя перерисовка 30 кадров в секунду
+DOUBLE_TAP_S = 0.35                     # двойной тап по фейдеру или панораме — значение по умолчанию
+MIN_DB, MAX_DB = -60.0, 6.0             # −60 = −∞
+
+
+def db_to_frac(db):
+    """Шкала фейдера как у Aeros: 0 дБ на 3/4 высоты, вниз — плавно к −∞."""
+    if db <= MIN_DB:
+        return 0.0
+    if db >= 0:
+        return 0.75 + 0.25 * min(db, MAX_DB) / MAX_DB
+    return 0.75 * (1.0 - math.sqrt(-db / -MIN_DB))
+
+
+def frac_to_db(f):
+    f = max(0.0, min(1.0, f))
+    if f >= 0.75:
+        return (f - 0.75) / 0.25 * MAX_DB
+    if f <= 0.01:
+        return MIN_DB
+    return MIN_DB * (1.0 - f / 0.75) ** 2
+
+
+def lin_to_frac(v):
+    """Пик (линейный) в положение на шкале фейдера."""
+    return db_to_frac(20.0 * math.log10(v)) if v > 1e-4 else 0.0
 
 # Состояния дорожки (порт o_stN, как TrackView::state в core/looper.h)
 ST_EMPTY, ST_ARMED, ST_REC, ST_PLAY, ST_DUB = range(5)
@@ -137,6 +162,10 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         self.widget_canvas = tkinter.Canvas(self, highlightthickness=0, relief='flat', bg=BG)
         self.widget_canvas.grid(sticky='news')
         self.widget_canvas.bind("<ButtonPress-1>", self._on_press)
+        self.widget_canvas.bind("<B1-Motion>", self._on_motion)
+        self.widget_canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.drag = None          # (вид, символ, прямоугольник) пока палец на фейдере или панораме
+        self.last_tap = (None, 0.0)
         self.family = None
         self.fonts = {}
         self.last_bar = None
@@ -169,16 +198,41 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
 
     def _zset(self, sym, value):
         try:
-            self.processor.controllers_dict[sym].set_value(int(value))
+            self.processor.controllers_dict[sym].set_value(value if isinstance(value, float) else int(value))
             return True
         except Exception:
             return False
+
+    def _zfloat(self, sym, default=0.0):
+        try:
+            return float(self.processor.controllers_dict[sym].value)
+        except Exception:
+            return default
 
     # ---------- касания ----------
     def _on_press(self, event):
         for (x0, y0, x1, y1, what, arg) in self.hits:
             if x0 <= event.x <= x1 and y0 <= event.y <= y1:
-                if what == "gear":
+                if what in ("fader", "pan"):
+                    now = time.monotonic()
+                    key = (what, arg)
+                    if self.last_tap[0] == key and now - self.last_tap[1] < DOUBLE_TAP_S:
+                        self._zset(arg, 0.0 if what == "fader" else 0)  # двойной тап: 0 дБ / центр
+                        self.last_tap = (None, 0.0)
+                        self.drag = None
+                    else:
+                        self.last_tap = (key, now)
+                        self.drag = (what, arg, (x0, y0, x1, y1))
+                        self._drag_to(event)
+                    self.refresh_gui()
+                    return
+                if what == "chm":
+                    self._zset(arg, 1 - self._zval(arg))
+                elif what == "mute":
+                    self._zset("tmute", arg)
+                elif what == "lim":
+                    self._zset("limiter", 1 - self._zval("limiter"))
+                elif what == "gear":
                     self.settings_open = not self.settings_open
                 elif what == "step":
                     sym, values, d = arg
@@ -189,6 +243,26 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                     self._zset(sym, values[i])
                 self.refresh_gui()
                 return
+
+    def _drag_to(self, event):
+        if not self.drag:
+            return
+        what, sym, (x0, y0, x1, y1) = self.drag
+        if what == "fader":
+            f = (y1 - event.y) / max(1.0, y1 - y0)
+            self._zset(sym, round(frac_to_db(f), 1))
+        else:
+            v = (event.x - (x0 + x1) / 2.0) / max(1.0, (x1 - x0) / 2.0) * 100.0
+            v = int(round(max(-100.0, min(100.0, v))))
+            self._zset(sym, 0 if abs(v) < 4 else v)  # у центра прилипает к C
+
+    def _on_motion(self, event):
+        if self.drag:
+            self._drag_to(event)
+            self._draw()
+
+    def _on_release(self, event):
+        self.drag = None
 
     # ---------- текст, который всегда влезает в свою клетку ----------
     def _family(self):
@@ -615,13 +689,16 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                              stipple="gray50")
 
     def _mixer(self, st, x0, y0, x1, y1):
-        """Mixer по образцу Aeros; значения уровней появятся на этапе 4."""
+        """Mixer по образцу Aeros: 4 дорожки играющего парта, справа Dry и Master."""
         c = self.widget_canvas
+        m = self.monitors or {}
         w, hh = x1 - x0, y1 - y0
-        master_w = max(34, w * 0.12)
-        cw = (w - master_w - 8) / 4.0
+        side_w = max(70, w * 0.24)
+        cw = (w - side_w - 6) / 4.0
+        base = st["part"] * 4
         for i in range(4):
             tr = st["tracks"][i]
+            n = base + i + 1
             cx0 = x0 + i * cw
             mid = cx0 + cw / 2
             active = i == st["track"]
@@ -629,28 +706,90 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             has_loop = tr["state"] in (ST_PLAY, ST_DUB)
             if i:
                 c.create_line(cx0, y0, cx0, y1, fill="#1c1c1c", width=1)
-            r = min(cw * 0.2, hh * 0.09)
-            self._pie(mid, y0 + r + 2, r, col, tr["pos"] if has_loop else 0.0, empty=not has_loop)
-            self._text(mid, y0 + r + 2, str(i + 1), r * 1.3, r * 1.3, TEXT if has_loop else col)
-            # кнопка M
-            by0 = y0 + r * 2 + hh * 0.05
-            bs = min(cw * 0.3, hh * 0.13)
-            mcol = GRAY if tr["muted"] else mix(col, BG, 0.3)
-            c.create_rectangle(mid - bs / 2, by0, mid + bs / 2, by0 + bs, fill=mcol, width=0)
-            self._text(mid, by0 + bs / 2, "M", bs * 0.8, bs * 0.8, TEXT)
-            # сдвоенный фейдер: две колонки сегментов, белая ручка на 0 дБ
-            fy0, fy1 = by0 + bs + hh * 0.06, y1 - 4
-            fw = cw * 0.11
-            for k in (-1, 1):
-                fx = mid + k * fw * 0.9
-                n = max(6, int((fy1 - fy0) / 7))
-                seg = (fy1 - fy0) / n
-                for j in range(n):
-                    sy = fy1 - j * seg
-                    c.create_rectangle(fx - fw / 2, sy - seg * 0.45, fx + fw / 2, sy, fill="#1e1e1e", width=0)
-            ky = fy0 + (fy1 - fy0) * 0.25
-            c.create_rectangle(mid - cw * 0.2, ky - 7, mid + cw * 0.2, ky + 7, fill=TEXT, width=0)
-        self._master(x1 - master_w, y0, x1 - 4, y1)
+            if active:
+                c.create_rectangle(cx0 + 2, y0 + 1, cx0 + cw - 2, y1 - 1, outline=GREEN, width=2)
+            # круг позиции с номером
+            r = min(cw * 0.16, hh * 0.075)
+            self._pie(mid, y0 + r + 3, r, col, tr["pos"] if has_loop else 0.0, empty=not has_loop)
+            self._text(mid, y0 + r + 3, str(i + 1), r * 1.3, r * 1.3, TEXT if has_loop else col)
+            # панорама: полоса, метка центра, бегунок
+            pan = self._zval("pan%d" % n)
+            py0 = y0 + 2 * r + hh * 0.05
+            ph = max(10, hh * 0.07)
+            px0, px1 = cx0 + cw * 0.12, cx0 + cw * 0.88
+            c.create_rectangle(px0, py0, px1, py0 + ph, fill="#1a1a1a", width=0)
+            c.create_line((px0 + px1) / 2, py0, (px0 + px1) / 2, py0 + ph, fill=DIM)
+            kx = (px0 + px1) / 2 + (px1 - px0) / 2 * pan / 100.0
+            c.create_rectangle(kx - 3, py0 - 1, kx + 3, py0 + ph + 1, fill=TEXT, width=0)
+            self.hits.append((px0 - 4, py0 - 6, px1 + 4, py0 + ph + 6, "pan", "pan%d" % n))
+            # кнопки: режим канала и M
+            by0 = py0 + ph + hh * 0.04
+            bh = max(14, hh * 0.09)
+            bw = (cw * 0.76 - 4) / 2
+            split = self._zval("chm%d" % n) == 1
+            bx = cx0 + cw * 0.12
+            c.create_rectangle(bx, by0, bx + bw, by0 + bh, fill="#3a2a5a" if split else "#262626", width=0)
+            self._text(bx + bw / 2, by0 + bh / 2, "SPLIT" if split else "ST", bw * 0.9, bh * 0.7,
+                       PURPLE if split else "#b0b0b0")
+            self.hits.append((bx, by0, bx + bw, by0 + bh, "chm", "chm%d" % n))
+            mx = bx + bw + 4
+            c.create_rectangle(mx, by0, mx + bw, by0 + bh, fill=GRAY if tr["muted"] else mix(col, BG, 0.4), width=0)
+            self._text(mx + bw / 2, by0 + bh / 2, "M", bw * 0.8, bh * 0.75, TEXT)
+            self.hits.append((mx, by0, mx + bw, by0 + bh, "mute", i + 1))
+            # фейдер с индикатором пика и подпись дБ
+            lab_h = max(10, hh * 0.07)
+            fy0, fy1 = by0 + bh + hh * 0.05, y1 - lab_h - 4
+            db = self._zfloat("lev%d" % n)
+            self._fader(mid, fy0, fy1, cw, db, float(m.get("o_pk%d" % (i + 1), 0.0)), None, "lev%d" % n)
+            self._text(mid, y1 - lab_h / 2 - 2, "-\u221e" if db <= MIN_DB else "%+.1f" % db, cw * 0.8, lab_h, DIM,
+                       bold=False)
+        # справа: Dry и Master
+        sx0 = x1 - side_w
+        c.create_line(sx0 - 3, y0, sx0 - 3, y1, fill="#2a2a2a", width=1)
+        half = side_w / 2.0
+        lab_h = max(10, hh * 0.07)
+        top_h = max(14, hh * 0.09)
+        for k, (sym, label) in enumerate((("dry", "DRY"), ("master", "MASTER"))):
+            mid = sx0 + half * (k + 0.5)
+            self._text(mid, y0 + top_h / 2 + 2, label, half * 0.9, top_h * 0.8, TEXT)
+            db = self._zfloat(sym)
+            if sym == "master":
+                lim = self._zval("limiter") == 1
+                ly0 = y0 + top_h + 6
+                c.create_rectangle(mid - half * 0.4, ly0, mid + half * 0.4, ly0 + top_h,
+                                   fill="#2a3a20" if lim else "#262626", width=0)
+                self._text(mid, ly0 + top_h / 2, "LIM", half * 0.7, top_h * 0.7, GREEN if lim else DIM)
+                self.hits.append((mid - half * 0.4, ly0, mid + half * 0.4, ly0 + top_h, "lim", None))
+                pk = (float(m.get("o_mpk_l", 0.0)), float(m.get("o_mpk_r", 0.0)))
+            else:
+                pk = None
+            fy0 = y0 + top_h * 2 + 14
+            self._fader(mid, fy0, y1 - lab_h - 4, half, db, pk[0] if pk else None, pk[1] if pk else None, sym)
+            self._text(mid, y1 - lab_h / 2 - 2, "-\u221e" if db <= MIN_DB else "%+.1f" % db, half * 0.9, lab_h, DIM,
+                       bold=False)
+
+    def _fader(self, mid, fy0, fy1, cw, db, pk_l, pk_r, sym):
+        """Сдвоенная шкала сегментов (горит по пику) и белая ручка уровня; тянется пальцем."""
+        c = self.widget_canvas
+        fw = cw * 0.11
+        n = max(6, int((fy1 - fy0) / 8))
+        seg = (fy1 - fy0) / n
+        for side, pk in ((-1, pk_l), (1, pk_r if pk_r is not None else pk_l)):
+            fx = mid + side * fw * 0.9
+            lit = int(round(lin_to_frac(pk) * n)) if pk is not None else 0
+            for j in range(n):
+                frac = (j + 1) / n
+                k = 2 if frac > 0.92 else (1 if frac > 0.78 else 0)
+                colr = METER_ON[k] if j < lit else "#1e1e1e"
+                sy = fy1 - j * seg
+                c.create_rectangle(fx - fw / 2, sy - seg * 0.55, fx + fw / 2, sy, fill=colr, width=0)
+        # метка 0 дБ
+        z = fy1 - (fy1 - fy0) * 0.75
+        c.create_line(mid - cw * 0.3, z, mid - cw * 0.22, z, fill=DIM)
+        ky = fy1 - (fy1 - fy0) * db_to_frac(db)
+        kh = max(5, min(9, (fy1 - fy0) * 0.04))
+        c.create_rectangle(mid - cw * 0.2, ky - kh, mid + cw * 0.2, ky + kh, fill=TEXT, width=0)
+        self.hits.append((mid - cw * 0.35, fy0 - kh, mid + cw * 0.35, fy1 + kh, "fader", sym))
 
     def _settings(self, x0, y0, x1, y1):
         """Настройки: две колонки, в строке подпись и значение со стрелками ◀ ▶ по краям."""
