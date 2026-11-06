@@ -115,6 +115,10 @@ void Looper::start_rec(int ti) {
   t.rec_frames = 0;
   t.rec_target = 0;
   if (set_.quantize && set_.length[ti] > 0) t.rec_target = (uint64_t)std::llround(set_.length[ti] * (double)bar_frames());
+  // Quantize: запись начинается на черте такта, запоминаем её долю для подстройки фазы
+  t.rec_q = set_.quantize;
+  t.b0 = std::round(beats_ / bpb_) * bpb_;
+  t.rec_bpf = bpf_;
   t.st = TState::Rec;
 }
 
@@ -165,6 +169,8 @@ void Looper::close_loop(int ti, uint64_t L) {
   t.muted = t.mute_pending = false;
   t.gain = 1.0f;
   t.seam_t = 0;
+  t.synced = t.rec_q;
+  t.loop_beats = std::fmax(1.0, std::round((double)L * t.rec_bpf));
   t.st = TState::Play;
   if (set_.rop) start_dub(ti);
   // Хвост, записанный после конца цикла, ложится на начало: стык и (в ROP) овердаб.
@@ -181,6 +187,7 @@ void Looper::close_loop(int ti, uint64_t L) {
   t.xf_from = -1;
   t.xf_owned = false;
   t.xf_pos = 0;
+  t.xpos = t.pos;
   t.xf_len = xf_;
 }
 
@@ -299,6 +306,7 @@ void Looper::reset_all_now() {
       t.xf_from = t.sum;
       t.xf_owned = true;
       t.xf_pos = 0;
+      t.xpos = t.pos;
       t.xf_len = xf_;
     }
     t.sum = -1;
@@ -310,6 +318,7 @@ void Looper::reset_all_now() {
     t.rate = 1.0;
     t.rate_step = 0.0;
     t.rev_wait = -1;
+    t.synced = false;
     t.dub_end = -1;
     t.undo_after_dub = t.reset_after_dub = false;
     t.seam_t = kNoSeam;
@@ -390,10 +399,12 @@ void Looper::swap_to(int ti, int32_t new_sum, bool free_old) {
   t.xf_from = old;
   t.xf_owned = free_old;
   t.xf_pos = 0;
+  t.xpos = t.pos;
   t.xf_len = xf_;
   t.sum = new_sum;
   if (new_sum < 0) {
     t.rev_wait = -1;
+    t.synced = false;
     t.st = TState::Empty;
     t.len = 0;
     t.muted = t.mute_pending = false;
@@ -402,6 +413,7 @@ void Looper::swap_to(int ti, int32_t new_sum, bool free_old) {
     return;
   }
   t.len = pool_.buf(new_sum).len;
+  if (t.synced && bpf_ > 0) t.loop_beats = std::fmax(1.0, std::round((double)t.len * t.rec_bpf));
   if (old < 0) {
     t.pos = 0.0;
     t.dir = 1;
@@ -494,6 +506,7 @@ void Looper::work_done(const WorkResp& r) {
   t.xf_from = t.sum;
   t.xf_owned = true;
   t.xf_pos = 0;
+  t.xpos = t.pos;
   t.xf_len = xf_;
   t.sum = job_.dst;
   if (r.op == 1) {
@@ -630,7 +643,7 @@ void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
   if (playing) read_sum(t, t.sum, t.pos, l, r);
   if (fading) {
     float fl, fr;
-    read_sum(t, t.xf_from, t.pos, fl, fr);
+    read_sum(t, t.xf_from, t.xpos, fl, fr);
     const float g = (float)t.xf_pos / (float)t.xf_len;
     l = fl * (1.0f - g) + l * g;
     r = fr * (1.0f - g) + r * g;
@@ -671,6 +684,14 @@ void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
       t.pos = std::round(t.pos);  // дальше снова прямое чтение
     }
   }
+  if (t.xf_len > 0 && t.xf_from >= 0) {
+    const double XL = (double)pool_.buf(t.xf_from).len;
+    t.xpos += t.rate;
+    if (XL > 0) {
+      if (t.xpos >= XL) t.xpos -= XL;
+      else if (t.xpos < 0.0) t.xpos += XL;
+    }
+  }
   t.pos += t.rate;
   bool wrapped = false;
   if (t.pos >= (double)L) {
@@ -686,8 +707,35 @@ void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
 void Looper::set_time(const TimeInfo& ti) {
   bpf_ = ti.beats_per_frame;
   bpb_ = ti.bpb > 0 ? ti.bpb : 4;
+  const bool started = ti.rolling && !rolling_;
+  const bool jumped = ti.rolling && rolling_ && std::fabs(ti.beats - beats_) > 0.05;
   rolling_ = ti.rolling;
   if (rolling_) beats_ = ti.beats;  // сетка Zynthian; иначе продолжаем свой счёт
+  // Транспорт пошёл или перескочил: лупы в Quantize встают в фазу с позицией Zynthian.
+  if ((started || jumped) && time_seen_ && pool_.ok())
+    for (int k = 0; k < kTracks; ++k) resync(k);
+  time_seen_ = true;
+}
+
+void Looper::resync(int ti) {
+  Track& t = tr_[ti];
+  if (!t.synced || t.len == 0 || t.loop_beats <= 0 || t.dir < 0 || t.rate_step != 0.0) return;
+  if (t.st != TState::Play && t.st != TState::Dub) return;
+  double ph = std::fmod((beats_ - t.b0) / t.loop_beats, 1.0);
+  if (ph < 0) ph += 1.0;
+  const double L = (double)t.len;
+  const double want = std::round(ph * L);
+  double diff = std::fabs(want - t.pos);
+  if (diff > L / 2) diff = L - diff;
+  if (diff < sr_ * 0.001) return;  // и так в фазе (меньше 1 мс)
+  // перескок через кроссфейд: старая позиция затухает, новая нарастает
+  if (t.xf_from >= 0 && t.xf_owned) pool_.free_buf(t.xf_from);
+  t.xf_from = t.sum;
+  t.xf_owned = false;
+  t.xf_pos = 0;
+  t.xf_len = xf_;
+  t.xpos = t.pos;
+  t.pos = want >= L ? 0.0 : want;
 }
 
 void Looper::process(const float* in_l, const float* in_r, float* out_l, float* out_r, uint32_t n,

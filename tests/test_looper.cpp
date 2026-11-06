@@ -35,6 +35,8 @@ struct Sim {
   std::function<float(uint64_t)> in_l = [](uint64_t) { return 0.0f; };
   std::function<float(uint64_t)> in_r;
   std::vector<float> out_l, out_r;
+  std::function<double(uint64_t)> beats_at;  // позиция транспорта в долях (по умолчанию от t = 0)
+  double beats_now() const { return beats_at ? beats_at(t) : (double)t * bpm / 60.0 / SR; }
 
   explicit Sim(size_t pool_mb = 64, bool quantize = false) {
     lp->init(SR, pool_mb << 20);
@@ -51,7 +53,7 @@ struct Sim {
         ir[i] = in_r ? in_r(t + i) : il[i] * 0.5f;
       }
       ti.beats_per_frame = bpm / 60.0 / SR;
-      ti.beats = (double)t * ti.beats_per_frame;
+      ti.beats = beats_now();
       lp->process(il, ir, ol, orr, BLOCK, ti);
       WorkMsg m;
       if (lp->take_work(m)) {
@@ -66,7 +68,7 @@ struct Sim {
   }
   void cmd(Cmd c) {
     ti.beats_per_frame = bpm / 60.0 / SR;
-    ti.beats = (double)t * ti.beats_per_frame;
+    ti.beats = beats_now();
     lp->set_time(ti);
     lp->command(c);
   }
@@ -417,7 +419,7 @@ static void test_reverse_quantized() {
   s.apply();
   s.in_l = sine(180.0, 0.4f);
   s.cmd(Cmd::Rec);
-  s.run(BAR * 2 + BLOCK);  // ждём такт, пишем 1 такт: цикл начинается на черте
+  s.run(BAR * 2 + BLOCK * 8);  // ждём такт, пишем 1 такт (+ хвост стыка): цикл начинается на черте
   CHECK(s.v().state == 3);
   s.in_l = [](uint64_t) { return 0.0f; };
   s.run(BAR / 3);  // середина такта
@@ -445,12 +447,47 @@ static void test_reverse_quantized() {
   CHECK(s.v().reversed);
 }
 
+// Записали луп, остановили транспорт (луп играет), Zynthian пошёл заново с первого такта:
+// луп встаёт в фазу с позицией Zynthian через кроссфейд, без щелчка.
+static void test_transport_restart_resync() {
+  const uint64_t BAR = 96000;
+  const double bpf = 120.0 / 60.0 / SR;
+  Sim s(64, true);
+  s.ti.rolling = true;
+  s.set.length[0] = 1;
+  s.apply();
+  s.in_l = sine(180.0, 0.4f);
+  s.cmd(Cmd::Rec);
+  s.run(BAR * 2 + BLOCK * 8);  // запись с 1-го такта, 1 такт (+ хвост стыка)
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run((uint64_t)(BAR * 1.3));
+  CHECK(s.v().state == 3);
+  // стоп: позиция Zynthian замерла, луп играет дальше
+  const double frozen = s.beats_now();
+  s.ti.rolling = false;
+  s.beats_at = [frozen](uint64_t) { return frozen; };
+  s.run((uint64_t)(BAR * 0.45));
+  // пуск с начала (доля 0)
+  const uint64_t t_start = s.t;
+  s.ti.rolling = true;
+  s.beats_at = [t_start, bpf](uint64_t t) { return (double)(t - t_start) * bpf; };
+  s.run(BLOCK * 20);
+  // фаза: начало цикла на тактовой черте Zynthian
+  const uint64_t want = (s.t - t_start) % BAR;
+  const uint64_t got = (uint64_t)std::llround(s.v().pos * (double)BAR) % BAR;
+  int64_t diff = (int64_t)got - (int64_t)want;
+  CHECK(diff >= -2 && diff <= 2);
+  CHECK(s.max_step(BAR * 2, s.t) < 0.03f);
+  s.wav("transport_restart");
+}
+
 int main() {
   test_record_play();
   test_overdubs_undo();
   test_mute();
   test_reverse();
   test_reverse_quantized();
+  test_transport_restart_resync();
   test_quantize();
   test_rop();
   test_reset();

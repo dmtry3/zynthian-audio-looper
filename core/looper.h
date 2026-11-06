@@ -110,6 +110,11 @@ class Looper {
     double rate = 1.0;
     int dir = 1;
     double rate_step = 0.0;
+    double xpos = 0.0;       // позиция чтения xf_from (при перескоке фазы отличается от pos)
+    // фаза относительно сетки (Quantize): позиция 0 цикла приходится на долю b0 + k*loop_beats
+    bool synced = false;
+    bool rec_q = false;
+    double b0 = 0.0, loop_beats = 0.0, rec_bpf = 0.0;
     int64_t rev_wait = -1;   // Quantize: кадров до начала разворота (-1 = не ждём)
     double rev_n = 0.0;      // длина разворота, кадров
     // запись основы
@@ -143,6 +148,7 @@ class Looper {
   void finish_dub(int ti);
   void apply_mute(int ti);
   void start_reverse(Track& t, double n);
+  void resync(int ti);
   void leave_track(int ti);
 
   // undo/redo и память
@@ -174,6 +180,7 @@ class Looper {
   double beats_ = 0.0, bpf_ = 0.0;  // сетка: при стоящем транспорте лупер считает сам
   int bpb_ = 4;
   bool rolling_ = false;
+  bool time_seen_ = false;
   // рабочий поток: одно задание за раз
   bool job_pending_ = false, job_running_ = false;
   WorkMsg job_{};
