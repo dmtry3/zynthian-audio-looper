@@ -169,6 +169,7 @@ void Looper::start_rec(int ti) {
   t.rec_q = set_.quantize;
   t.b0 = std::round(beats_ / bpb_) * bpb_;
   t.rec_bpf = bpf_;
+  t.tspd = 1.0;
   t.st = TState::Rec;
 }
 
@@ -397,7 +398,7 @@ void Looper::reset_all_now() {
     t.lock_to = -1;
     t.lock_ready = false;
     t.mspd = 1.0f;
-    t.mcur = t.spd = 1.0;
+    t.mcur = t.spd = t.tspd = 1.0;
     t.phase_reset = t.phase_wait = false;
     t.dub_end = -1;
     t.undo_after_dub = t.reset_after_dub = false;
@@ -405,6 +406,9 @@ void Looper::reset_all_now() {
   }
   default_locks();
   reset_mixer();
+  // курсор — на первую дорожку первого парта
+  cur_part_ = 0;
+  active_ = 0;
 }
 
 void Looper::reset_mixer() {
@@ -1089,13 +1093,18 @@ void Looper::speed_reset(int k) {
   t.phase_reset = true;  // доедет до 1× — встанет в фазу с тактом
 }
 
-// Раз в блок: темп через фильтр, плавный ход ручной скорости, итоговая скорость дорожек.
-// В Quantize: следование темпу (темп сейчас / темп при записи) и фазовая автоподстройка:
-// дорожка на ручной 1× чуть подправляет скорость (до ±2 %), чтобы стоять в фазе с позицией Zynthian.
+// Раз в блок: плавный ход ручной скорости и следование темпу, итоговая скорость дорожек.
+// Следование темпу (Quantize) — как у ленты: скорость = темп сейчас / темп при записи.
+// Пока дорожка может стоять в фазе с Zynthian (ручная 1×, вперёд, играет), скорость и фаза
+// ведутся одним критически задемпфированным звеном второго порядка: при смене темпа скорость
+// плавно (без излома) идёт к новой, чуть переходит её (≈13 % от шага темпа) ровно настолько,
+// чтобы отставание по фазе ушло само. Раньше скорость шла за фильтром темпа, а отставание
+// догонялось отдельной подстройкой ±2 % — высота уходила выше цели почти на секунду («плывёт»).
 void Looper::update_speeds(uint32_t n) {
-  if (bpf_f_ <= 0.0) bpf_f_ = bpf_;
-  const double tg = std::fmax(1.0, (double)set_.tempo_glide_ms) / 1000.0 / 4.0 * sr_;
-  bpf_f_ += (bpf_ - bpf_f_) * (1.0 - std::exp(-(double)n / tg));
+  const double glide = std::fmax(1.0, (double)set_.tempo_glide_ms) / 1000.0 * sr_;  // кадров
+  const double w = 4.0 / glide;                                 // собственная частота, 1/кадр
+  const double kt = 1.0 - std::exp(-(double)n * w);             // без фазы: первый порядок, τ = glide/4
+  const double emax = 0.01 * sr_;                               // ошибка фазы в расчёте не больше 10 мс
   const double sg = (double)set_.spd_glide_ms / 1000.0 / 4.0 * sr_;
   const double ks = sg < 1.0 ? 1.0 : 1.0 - std::exp(-(double)n / sg);
   for (int k = 0; k < kTracks; ++k) {
@@ -1107,29 +1116,37 @@ void Looper::update_speeds(uint32_t n) {
       lc += (lt - lc) * ks;
       t.mcur = std::fabs(lt - lc) < 1e-5 ? target : std::exp2(lc);
     }
-    double sp = t.mcur;
-    if (t.rec_q && set_.quantize && t.rec_bpf > 0.0 && bpf_f_ > 0.0) sp *= bpf_f_ / t.rec_bpf;
-    // фазовая автоподстройка
-    const bool can_lock = t.synced && t.len && t.loop_beats > 0 && t.dir > 0 && t.rate_step == 0.0 &&
-                          t.mcur == 1.0 && set_.quantize && (t.st == TState::Play || t.st == TState::Dub) &&
+    const bool follow = t.rec_q && set_.quantize && t.rec_bpf > 0.0 && bpf_ > 0.0;
+    const bool can_lock = follow && t.synced && t.len && t.loop_beats > 0 && t.dir > 0 && t.rate_step == 0.0 &&
+                          t.mcur == 1.0 && (t.st == TState::Play || t.st == TState::Dub) &&
                           in_cur(k) && !t.stopped && !t.ustop && t.xf_len == 0;
-    if (can_lock) {
+    if (!follow) {
+      t.tspd = 1.0;
+    } else if (!can_lock) {
+      t.tspd += (bpf_ / t.rec_bpf - t.tspd) * kt;
+    } else {
+      const double L = (double)t.len;
       double ph = std::fmod((beats_ - t.b0) / t.loop_beats, 1.0);
       if (ph < 0) ph += 1.0;
-      const double L = (double)t.len;
-      double err = t.pos - ph * L;
+      double err = ph * L - t.pos;  // > 0: дорожка отстаёт
       if (err > L / 2) err -= L;
       if (err < -L / 2) err += L;
-      if (std::fabs(err) > 0.1 * sr_) {
-        resync(k);  // далеко (больше 100 мс): перескок через кроссфейд
+      if (std::fabs(err) > 0.05 * sr_) {
+        resync(k);  // далеко (больше 50 мс): перескок через кроссфейд
+        t.tspd = bpf_ / t.rec_bpf;
       } else {
-        double corr = -err / (0.25 * sr_);
-        if (corr > 0.02) corr = 0.02;
-        if (corr < -0.02) corr = -0.02;
-        if (std::fabs(err) < 0.25) corr = 0.0;
-        sp *= 1.0 + corr;
+        const double r = bpf_ * L / t.loop_beats;  // скорость сетки в кадрах дорожки за кадр
+        // шагами не длиннее 0,1/w: устойчиво при любом размере блока
+        const int m = 1 + (int)((double)n * w / 0.1);
+        const double dt = (double)n / m;
+        for (int j = 0; j < m; ++j) {
+          const double e = err > emax ? emax : (err < -emax ? -emax : err);
+          t.tspd += (w * w * e + 2.0 * w * (r - t.tspd)) * dt;
+          err += (r - t.tspd) * dt;
+        }
       }
     }
+    const double sp = t.mcur * t.tspd;
     t.spd = sp;
     // после сброса скорости — в фазу с тактом
     if (t.phase_reset && t.mcur == 1.0) {
@@ -1220,6 +1237,7 @@ void Looper::clone_into(int from, int to) {
   n.mspd = o.mspd;
   n.mcur = o.mcur;
   n.spd = o.spd;
+  n.tspd = o.tspd;
   mix_[to] = mix_[from];
   for (int j = 0; j < 4; ++j) mcur_[to][j] = mcur_[from][j];
   ++mix_epoch_;

@@ -174,6 +174,7 @@ class Looper {
     float mspd = 1.0f;
     double mcur = 1.0;
     double spd = 1.0;
+    double tspd = 1.0;         // следование темпу (с подстройкой фазы), без ручной
     bool phase_reset = false;  // сброс скорости: когда дойдёт до 1×, встать в фазу с тактом
     bool phase_wait = false;   // ждём границы (MUTE AT)
     // овердаб с пересчётом под скорость: прошлая позиция головки и прошлый вход
@@ -277,7 +278,6 @@ class Looper {
   int active_ = 0;
   // сетка
   double beats_ = 0.0, bpf_ = 0.0;  // сетка: при стоящем транспорте лупер считает сам
-  double bpf_f_ = 0.0;              // темп после фильтра (следование темпу без вибрато)
   int bpb_ = 4;
   bool rolling_ = false;
   bool time_seen_ = false;

@@ -927,10 +927,16 @@ static void test_mixer() {
     s.lp->set_mix(3, m);
     s.lp->set_master_db(-6.0f);
     s.lp->set_dry_db(-20.0f);
+    s.lp->set_speed(2, 0.5f);
+    s.lp->set_speed(9, 1.5f);
+    while (s.lp->active() != 2) s.cmd(Cmd::TrackNext);
     const uint32_t ep = s.lp->mix_epoch();
     s.cmd(Cmd::ResetAll);
     CHECK(s.lp->mix(3).level_db == 0.0f && s.lp->mix(3).mode == 0 && s.lp->master_db() == 0.0f &&
           s.lp->dry_db() == 0.0f && s.lp->limiter() && s.lp->mix_epoch() != ep);
+    // скорость всех дорожек — 1×, курсор на первой дорожке первого парта
+    CHECK(s.lp->speed(2) == 1.0f && s.lp->speed(9) == 1.0f);
+    CHECK(s.lp->active() == 0 && s.lp->part() == 0);
   }
   {  // Lock-копия переносит уровень, панораму и режим
     const uint64_t BAR = 96000;
@@ -994,7 +1000,19 @@ static void test_tempo_follow() {
   const double bc = s.beats_now();
   s.bpm = 140.0;
   s.beats_at = [tc, bc](uint64_t t) { return bc + (double)(t - tc) * 140.0 / 60.0 / SR; };
-  s.run((uint64_t)(SR * 4));
+  // переход: скорость переходит цель не больше чем на 15 % шага, фаза не дальше 10 мс
+  float pk = 0;
+  double emx = 0;
+  for (int k = 0; k < 100; ++k) {
+    s.run(BLOCK * 4);
+    pk = std::fmax(pk, s.v().espeed);
+    emx = std::fmax(emx, std::fabs(phase_err(s, s.beats_now(), 4.0, BAR)));
+  }
+  CHECK(pk - 140.0f / 120.0f < 0.15f * (140.0f / 120.0f - 1.0f));
+  CHECK(emx < 0.01 * SR);
+  std::printf("  tempo 120->140: overshoot %.2f %%, max phase error %.1f ms\n", (pk * 120.0 / 140.0 - 1.0) * 100.0,
+              emx / SR * 1000.0);
+  s.run((uint64_t)(SR * 3));
   const double e = phase_err(s, s.beats_now(), 4.0, BAR);
   CHECK(std::fabs(e) <= 48.0);  // ≤ 1 мс
   // скорость установилась: 140/120, без вибрато
@@ -1009,6 +1027,40 @@ static void test_tempo_follow() {
   CHECK(s.max_step(2 * BAR, s.t) < 0.03f);
   std::printf("  tempo 120->140: phase error after 4 s = %.1f frames\n", e);
   s.wav("tempo_follow");
+}
+
+// Темп крутилкой: 120 -> 140 по 1 BPM каждые 40 мс. Без щелчков, фаза не дальше 10 мс,
+// после остановки крутилки ошибка ≤ 1 мс.
+static void test_tempo_knob() {
+  const uint64_t BAR = 96000;
+  Sim s(64, true);
+  s.ti.rolling = true;
+  s.set.length[0] = 1;
+  s.apply();
+  s.in_l = sine(200.0, 0.3f);
+  s.run(BLOCK);
+  s.cmd(Cmd::Rec);
+  s.run(2 * BAR + BLOCK * 8);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(BAR);
+  const uint64_t t0 = s.t;
+  double emx = 0;
+  for (int b = 121; b <= 140; ++b) {
+    const uint64_t tc = s.t;
+    const double bc = s.beats_now();
+    s.bpm = b;
+    s.beats_at = [tc, bc, b](uint64_t t) { return bc + (double)(t - tc) * b / 60.0 / SR; };
+    for (int k = 0; k < 15; ++k) {  // 15 блоков по 128 = 40 мс
+      s.run(BLOCK);
+      emx = std::fmax(emx, std::fabs(phase_err(s, s.beats_now(), 4.0, BAR)));
+    }
+  }
+  CHECK(emx < 0.01 * SR);
+  s.run((uint64_t)(SR * 3));
+  CHECK(std::fabs(phase_err(s, s.beats_now(), 4.0, BAR)) <= 48.0);
+  CHECK(std::fabs(s.v().espeed - 140.0f / 120.0f) < 0.002f);
+  CHECK(s.max_step(t0, s.t) < 0.03f);
+  std::printf("  tempo knob 120->140: max phase error %.1f ms\n", emx / SR * 1000.0);
 }
 
 // Ручная скорость: плавный ход без щелчков, 0,25× снизу; сброс — к 1× и в фазу с тактом.
@@ -1089,6 +1141,7 @@ int main() {
   test_part_at_loop_end();
   test_mixer();
   test_tempo_follow();
+  test_tempo_knob();
   test_manual_speed();
   test_dub_at_speed();
   test_quantize();
