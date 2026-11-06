@@ -3,6 +3,7 @@
 #   python3 tests/widget_preview.py          сценарий с проверками (PASS/FAIL)
 #   python3 tests/widget_preview.py --show   окно 800x480: темп идёт, действия меняются сами
 import importlib.util
+import math
 import os
 import sys
 import time
@@ -104,6 +105,13 @@ class Processor:
         self.controllers_dict["mst_db"] = Ctrl("mst_db", 0.0, -60.0, 6.0)
         self.controllers_dict["limiter"] = Ctrl("limiter", 1, 0, 1)
         self.controllers_dict["tmute"] = Ctrl("tmute", 0, 0, 4)
+        # скорость (этап 5)
+        for i in range(1, 17):
+            self.controllers_dict["spd%d" % i] = Ctrl("spd%d" % i, 1.0, 0.25, 2.0)
+        self.controllers_dict["sreset"] = Ctrl("sreset", 0, 0, 4)
+        self.controllers_dict["spd_snap"] = Ctrl("spd_snap", 0, 0, 2)
+        self.controllers_dict["spd_glide"] = Ctrl("spd_glide", 150, 0, 2000)
+        self.controllers_dict["tempo_glide"] = Ctrl("tempo_glide", 500, 100, 4000)
 
 
 class Control:
@@ -368,6 +376,30 @@ def main():
     m["o_widget"], m["o_part"] = 0.0, 0.0
     wdg.update()
 
+    # Speed: касание по метке скорости у дорожки открывает экран Speed
+    m["o_widget"], m["o_part"], m["o_st2"], m["o_spd2"], m["o_espd2"] = 0.0, 0.0, 3.0, 0.84, 0.98
+    wdg.update()
+    check("метка скорости у дорожки 2 горит", "0.84\u00d7" in texts(wdg))
+    tap("speed", 1)
+    check("открылся экран Speed дорожки 2", wdg.speed_slot == 1 and "SPEED" in texts(wdg))
+    no_overlap("800x480, Speed")
+    tap("sslider", "spd2", fx=0.5)  # середина: −6 полутонов
+    check("слайдер: −6 полутонов", abs(12 * math.log2(cd["spd2"].value) + 6.0) < 0.3)
+    tap("sslider", "spd2", fx=2.0 / 3.0 + 0.002)  # почти 1×: прилипает
+    check("у 1× слайдер прилипает", cd["spd2"].value == 1.0)
+    tap("snap", None)
+    check("привязка: SEMI", cd["spd_snap"].value == 1 and "SNAP SEMI" in texts(wdg))
+    tap("sglide", None)
+    check("плавный ход: следующее значение", cd["spd_glide"].value == 250)
+    tap("sreset", 2)
+    check("кнопка 1x — команда сброса дорожки 2", cd["sreset"].value == 2)
+    cd["sreset"].value = 0
+    tap("sval", 2)
+    tap("sval", 2)
+    check("двойной тап по значению — сброс", cd["sreset"].value == 2)
+    tap("sclose", None)
+    check("CLOSE закрывает Speed", wdg.speed_slot is None)
+
     # виджет в Zynthian занимает только часть экрана: проверяем и маленькие размеры
     m["o_bpm"], m["o_bar"], m["o_bpb"] = 133.5, 127.0, 7.0
     for size in ("640x360", "480x272", "360x220"):
@@ -385,6 +417,10 @@ def main():
         wdg.update()
         no_overlap(size + ", Mixer")
         m["o_widget"] = 0.0
+        wdg.speed_slot = 0
+        wdg.update()
+        no_overlap(size + ", Speed")
+        wdg.speed_slot = None
 
     root.destroy()
     print("%s" % ("OK" if not fails else "%d FAILED" % fails))

@@ -91,6 +91,20 @@ def frac_to_db(f):
     return MIN_DB * (1.0 - f / 0.75) ** 2
 
 
+SPEED_MIN_ST, SPEED_MAX_ST = -24.0, 12.0     # 0,25× .. 2× в полутонах
+SNAP_NAMES = ("FREE", "SEMI", "OCT")
+GLIDE_STEPS = [0, 50, 100, 150, 250, 400, 600, 1000, 1500, 2000]
+
+
+def speed_snap(sp, snap):
+    """Как snap_speed в ядре: полутоны или октавы."""
+    if snap == 0 or sp <= 0:
+        return sp
+    st = 12.0 * math.log2(sp)
+    q = 12.0 if snap == 2 else 1.0
+    return 2.0 ** (round(st / q) * q / 12.0)
+
+
 def lin_to_frac(v):
     """Пик (линейный) в положение на шкале фейдера."""
     return db_to_frac(20.0 * math.log10(v)) if v > 1e-4 else 0.0
@@ -122,12 +136,14 @@ SETTINGS = [
     ("fade_out", "FADE OUT", FADE_STEPS, _ms),
     ("fade_in", "FADE IN", FADE_STEPS, _ms),
     ("rev_time", "REVERSE", REV_STEPS, _ms),
+    ("tempo_glide", "TEMPO GLIDE", [100, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 4000], _ms),
     ("len1", "LENGTH 1", list(range(17)), _len),
     ("len2", "LENGTH 2", list(range(17)), _len),
     ("len3", "LENGTH 3", list(range(17)), _len),
     ("len4", "LENGTH 4", list(range(17)), _len),
 ]
-SETTING_DEFAULTS = {"rec_order": 0, "mode": 1, "mute_q": 2, "part_q": 3, "fade_out": 200, "fade_in": 200, "rev_time": 50,
+SETTING_DEFAULTS = {"rec_order": 0, "mode": 1, "mute_q": 2, "part_q": 3, "tempo_glide": 500, "spd_snap": 0,
+                    "spd_glide": 150, "fade_out": 200, "fade_in": 200, "rev_time": 50,
                     "len1": 0, "len2": 0, "len3": 0, "len4": 0}
 
 
@@ -165,6 +181,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         self.widget_canvas.bind("<B1-Motion>", self._on_motion)
         self.widget_canvas.bind("<ButtonRelease-1>", self._on_release)
         self.drag = None          # (вид, символ, прямоугольник) пока палец на фейдере или панораме
+        self.speed_slot = None    # открыт экран Speed этой дорожки (0..3)
         self.last_tap = (None, 0.0)
         self.family = None
         self.fonts = {}
@@ -213,6 +230,43 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
     def _on_press(self, event):
         for (x0, y0, x1, y1, what, arg) in self.hits:
             if x0 <= event.x <= x1 and y0 <= event.y <= y1:
+                if what == "speed":  # метка скорости у дорожки: экран Speed
+                    self.speed_slot = arg
+                    self.settings_open = False
+                    self.refresh_gui()
+                    return
+                if what == "sclose":
+                    self.speed_slot = None
+                    self.refresh_gui()
+                    return
+                if what == "sreset":
+                    self._zset("sreset", arg)
+                    self.refresh_gui()
+                    return
+                if what == "snap":
+                    self._zset("spd_snap", (self._zval("spd_snap") + 1) % 3)
+                    self.refresh_gui()
+                    return
+                if what == "sglide":
+                    cur = self._zval("spd_glide")
+                    i = min(range(len(GLIDE_STEPS)), key=lambda k: abs(GLIDE_STEPS[k] - cur))
+                    self._zset("spd_glide", GLIDE_STEPS[(i + 1) % len(GLIDE_STEPS)])
+                    self.refresh_gui()
+                    return
+                if what == "sval":  # двойной тап по значению скорости — сброс
+                    now = time.monotonic()
+                    if self.last_tap[0] == ("sval", arg) and now - self.last_tap[1] < DOUBLE_TAP_S:
+                        self._zset("sreset", arg)
+                        self.last_tap = (None, 0.0)
+                    else:
+                        self.last_tap = (("sval", arg), now)
+                    self.refresh_gui()
+                    return
+                if what == "sslider":
+                    self.drag = (what, arg, (x0, y0, x1, y1))
+                    self._drag_to(event)
+                    self.refresh_gui()
+                    return
                 if what in ("fader", "pan"):
                     now = time.monotonic()
                     key = (what, arg)
@@ -248,6 +302,14 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         if not self.drag:
             return
         what, sym, (x0, y0, x1, y1) = self.drag
+        if what == "sslider":
+            f = (event.x - x0) / max(1.0, x1 - x0)
+            st = SPEED_MIN_ST + max(0.0, min(1.0, f)) * (SPEED_MAX_ST - SPEED_MIN_ST)
+            sp = speed_snap(2.0 ** (st / 12.0), self._zval("spd_snap"))
+            if abs(12.0 * math.log2(sp)) < 0.15:
+                sp = 1.0  # у 1× прилипает
+            self._zset(sym, round(max(0.25, min(2.0, sp)), 4))
+            return
         if what == "fader":
             f = (y1 - event.y) / max(1.0, y1 - y0)
             self._zset(sym, round(frac_to_db(f), 1))
@@ -420,6 +482,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                 "reversed": bool(flags >> (4 + i) & 1),
                 "stopped": bool(flags >> (16 + i) & 1),
                 "locked": bool(flags >> (20 + i) & 1),
+                "speed": float(m.get("o_spd%d" % (i + 1), 1.0)),
+                "espeed": float(m.get("o_espd%d" % (i + 1), 1.0)),
             })
         if not 0 <= st["act"] < len(ACTIONS):
             st["act"] = 0
@@ -430,7 +494,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             st["beat"] = beat % st["bpb"]
             for tr in st["tracks"]:
                 if tr["state"] in (ST_PLAY, ST_DUB) and tr["len"] > 0 and not tr["stopped"]:
-                    d = dt / tr["len"]
+                    d = dt / tr["len"] * max(0.0, tr["espeed"])
                     tr["pos"] = (tr["pos"] + (-d if tr["reversed"] else d)) % 1.0
 
         # вспышка на сильной доле: смена такта (досчитанная по позиции из аудиопотока)
@@ -445,6 +509,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         # футсвитч переключил Loop/Mixer: настройки закрываются
         if self.last_widget is not None and st["widget"] != self.last_widget:
             self.settings_open = False
+            self.speed_slot = None
         self.last_widget = st["widget"]
 
         top_h = int(min(max(h * 0.12, 18), 46))
@@ -452,7 +517,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         gap = max(2, int(h * 0.012))
         self._tempo_bar(st, 0, 0, w, top_h, now)
         body = (0, top_h + gap, w, h - tab_h - gap)
-        if self.settings_open:
+        if self.speed_slot is not None:
+            self._speed_view(st, *body)
+        elif self.settings_open:
             self._settings(*body)
         elif st["widget"] == 1:
             self._mixer(st, *body)
@@ -540,7 +607,10 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             self._text(pcx, pcy, str(i + 1), pie_r * 1.3, pie_r * 1.3, num_col)
             if tr["locked"]:
                 self._lock_icon(pcx + pie_r * 1.05, ry0 + row_h * 0.26, row_h * 0.11)
-            self._text(pcx, ry0 + row_h * 0.87, "1.00×", row_h * 0.8, row_h * 0.22, DIM, bold=False)
+            sp = tr["speed"]
+            self._text(pcx, ry0 + row_h * 0.87, "%.2f×" % sp, row_h * 0.8, row_h * 0.22,
+                       ORANGE if abs(sp - 1.0) > 1e-3 else DIM, bold=abs(sp - 1.0) > 1e-3)
+            self.hits.append((x0 + part_w, ry0 + row_h * 0.72, x0 + part_w + row_h * 0.85, ry1, "speed", i))
             # волна цикла: сумма цветом дорожки (сыгранное ярче), слои овердабов полупрозрачно поверх
             wx0 = x0 + part_w + row_h * 0.9
             bw = wx1 - wx0
@@ -791,6 +861,61 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         c.create_rectangle(mid - cw * 0.2, ky - kh, mid + cw * 0.2, ky + kh, fill=TEXT, width=0)
         self.hits.append((mid - cw * 0.35, fy0 - kh, mid + cw * 0.35, fy1 + kh, "fader", sym))
 
+    def _speed_view(self, st, x0, y0, x1, y1):
+        """Скорость дорожки как у ленты: крупное значение, слайдер 0,25–2× с полутонами, 1×, привязка, ход."""
+        c = self.widget_canvas
+        slot = self.speed_slot
+        n = st["part"] * 4 + slot + 1
+        sym = "spd%d" % n
+        snap = self._zval("spd_snap")
+        sp = speed_snap(self._zfloat(sym, 1.0), snap)
+        st_val = 12.0 * math.log2(sp) if sp > 0 else 0.0
+        tr = st["tracks"][slot]
+        w, hh = x1 - x0, y1 - y0
+        pad = max(10, w * 0.04)
+        # значение (двойной тап — сброс к 1×)
+        vh = hh * 0.3
+        col = ORANGE if abs(sp - 1.0) > 1e-3 else TEXT
+        self._text(x0 + w * 0.3, y0 + vh / 2 + 4, "%.2f×" % sp, w * 0.45, vh, col)
+        self._text(x0 + w * 0.72, y0 + vh * 0.38 + 4, "%+.1f st" % st_val, w * 0.3, vh * 0.42, DIM)
+        if abs(tr["espeed"] - tr["speed"]) > 1e-3:  # следование темпу поверх ручной
+            self._text(x0 + w * 0.72, y0 + vh * 0.8 + 4, "tempo %.3f×" % tr["espeed"], w * 0.3, vh * 0.3, DIM,
+                       bold=False)
+        self.hits.append((x0, y0, x0 + w * 0.6, y0 + vh + 8, "sval", slot + 1))
+        # слайдер
+        sx0, sx1 = x0 + pad, x1 - pad
+        sy = y0 + vh + hh * 0.22
+        span = SPEED_MAX_ST - SPEED_MIN_ST
+        c.create_line(sx0, sy, sx1, sy, fill="#3a3a3a", width=4)
+        lab_h = max(10, hh * 0.08)
+        for semi in range(int(SPEED_MIN_ST), int(SPEED_MAX_ST) + 1):
+            x = sx0 + (sx1 - sx0) * (semi - SPEED_MIN_ST) / span
+            octave = semi % 12 == 0
+            th = hh * (0.07 if octave else 0.03)
+            c.create_line(x, sy - th, x, sy + th, fill="#b0b0b0" if octave else "#4a4a4a", width=2 if octave else 1)
+            if octave:  # крайние подписи — внутрь от края
+                anc = "w" if semi == int(SPEED_MIN_ST) else ("e" if semi == int(SPEED_MAX_ST) else "center")
+                lx = x - 4 if anc == "w" else (x + 4 if anc == "e" else x)
+                self._text(lx, sy + th + lab_h * 0.7, "%g×" % (2.0 ** (semi / 12.0)), (sx1 - sx0) / 7.0, lab_h,
+                           DIM, anc, bold=False)
+        kx = sx0 + (sx1 - sx0) * (max(SPEED_MIN_ST, min(SPEED_MAX_ST, st_val)) - SPEED_MIN_ST) / span
+        kh = hh * 0.09
+        c.create_rectangle(kx - 7, sy - kh, kx + 7, sy + kh, fill=col, width=0)
+        self.hits.append((sx0 - 10, sy - hh * 0.12, sx1 + 10, sy + hh * 0.12, "sslider", sym))
+        # кнопки: 1×, привязка, плавный ход
+        by0 = y1 - hh * 0.22
+        bh = hh * 0.2
+        gap = max(6, w * 0.02)
+        bw = (w - 2 * pad - 2 * gap) / 3.0
+        buttons = [("1×", "sreset", slot + 1, GREEN),
+                   ("SNAP " + SNAP_NAMES[snap % 3], "snap", None, TEXT),
+                   ("GLIDE %d ms" % self._zval("spd_glide"), "sglide", None, TEXT)]
+        for k, (label, kind, arg, colr) in enumerate(buttons):
+            bx = x0 + pad + k * (bw + gap)
+            c.create_rectangle(bx, by0, bx + bw, by0 + bh, fill="#202020", width=0)
+            self._text(bx + bw / 2, by0 + bh / 2, label, bw * 0.9, bh * 0.6, colr)
+            self.hits.append((bx, by0, bx + bw, by0 + bh, kind, arg))
+
     def _settings(self, x0, y0, x1, y1):
         """Настройки: две колонки, в строке подпись и значение со стрелками ◀ ▶ по краям."""
         c = self.widget_canvas
@@ -837,7 +962,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             hint, hcol = ACTIONS[st["act"]]
         else:
             hint, hcol = self._rec_hint(st)
-        if self.settings_open:
+        if self.speed_slot is not None:
+            items = [("SPEED", TEXT), ("TRACK %d" % (self.speed_slot + 1), GREEN), ("CLOSE", GREEN)]
+        elif self.settings_open:
             items = [("SETTINGS", TEXT), ("TAP ◀ ▶ TO CHANGE", DIM), ("⚙ CLOSE", GREEN)]
         else:
             part_txt = "PART %d" % (st["part"] + 1)
@@ -850,7 +977,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             tx0 = x0 + k * (tw + gap)
             c.create_rectangle(tx0, y0, tx0 + tw, y1, fill=TAB, width=0)
             self._text(tx0 + tw / 2, (y0 + y1) / 2, text, tw * 0.9, (y1 - y0) * 0.78, color)
-        if self.settings_open:
+        if self.speed_slot is not None:
+            self.hits.append((x0 + 2 * (tw + gap), y0, x1, y1, "sclose", None))
+        elif self.settings_open:
             self.hits.append((x0 + 2 * (tw + gap), y0, x1, y1, "gear", None))
 
     def _rec_hint(self, st):
