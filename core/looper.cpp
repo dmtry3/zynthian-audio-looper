@@ -67,6 +67,16 @@ void Looper::command(Cmd c) {
       t.rev_n = n;
       break;
     }
+    case Cmd::PlayStop: {
+      if (ps_pending_) {  // повторное нажатие до границы отменяет
+        ps_pending_ = 0;
+        break;
+      }
+      const bool stop = !user_stop_;
+      if (!set_.quantize || set_.mute_q == 0) apply_playstop(stop);
+      else ps_pending_ = stop ? 1 : 2;
+      break;
+    }
     case Cmd::TrackNext:
     case Cmd::TrackPrev:
       leave_track(active_);
@@ -94,7 +104,7 @@ void Looper::rec_press(int ti) {
     case TState::Rec: request_close(ti); break;
     case TState::Closing: break;
     case TState::Play:
-      if (!t.stopped) start_dub(ti);  // остановлена транспортом: молча игнорируем
+      if (!t.stopped && !t.ustop) start_dub(ti);  // остановлена: молча игнорируем
       break;
     case TState::Dub:
       if (t.dub_end < 0) end_dub(ti);
@@ -290,6 +300,8 @@ void Looper::reset_track(int ti) {
 }
 
 void Looper::reset_all_now() {
+  user_stop_ = false;
+  ps_pending_ = 0;
   for (int ti = 0; ti < kTracks; ++ti) {
     Track& t = tr_[ti];
     if (t.rec >= 0) pool_.free_buf(t.rec);
@@ -321,7 +333,7 @@ void Looper::reset_all_now() {
     t.rate_step = 0.0;
     t.rev_wait = -1;
     t.synced = false;
-    t.stopped = false;
+    t.stopped = t.ustop = false;
     t.sgain = 1.0f;
     t.dub_end = -1;
     t.undo_after_dub = t.reset_after_dub = false;
@@ -409,7 +421,7 @@ void Looper::swap_to(int ti, int32_t new_sum, bool free_old) {
   if (new_sum < 0) {
     t.rev_wait = -1;
     t.synced = false;
-    t.stopped = false;
+    t.stopped = t.ustop = false;
     t.sgain = 1.0f;
     t.st = TState::Empty;
     t.len = 0;
@@ -616,6 +628,10 @@ void Looper::on_grid(bool beat, bool bar) {
     if (t.st == TState::Armed && bar) start_rec(ti);
     if (t.mute_pending && ((set_.mute_q == 1 && beat) || (set_.mute_q == 2 && bar))) apply_mute(ti);
   }
+  if (ps_pending_ && ((set_.mute_q == 1 && beat) || (set_.mute_q >= 2 && bar))) {
+    apply_playstop(ps_pending_ == 1);
+    ps_pending_ = 0;
+  }
 }
 
 void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
@@ -668,9 +684,9 @@ void Looper::track_sample(int ti, float il, float ir, float& ol, float& orr) {
     t.gain = t.gain < target ? std::fmin(target, t.gain + step) : std::fmax(target, t.gain - step);
   }
   // остановка по транспорту: затухает по fade out, входит обратно по fade in
-  const float starget = t.stopped ? 0.0f : 1.0f;
+  const float starget = (t.stopped || t.ustop) ? 0.0f : 1.0f;
   if (t.sgain != starget) {
-    const float ms = t.stopped ? set_.fade_out_ms : set_.fade_in_ms;
+    const float ms = starget == 0.0f ? set_.fade_out_ms : set_.fade_in_ms;
     const float step = 1000.0f / ((ms > 1.0f ? ms : 1.0f) * (float)sr_);
     t.sgain = t.sgain < starget ? std::fmin(starget, t.sgain + step) : std::fmax(starget, t.sgain - step);
   }
@@ -724,8 +740,15 @@ void Looper::set_time(const TimeInfo& ti) {
   const bool started = ti.rolling && !rolling_;
   const bool jumped = ti.rolling && rolling_ && std::fabs(ti.beats - beats_) > 0.05;
   const bool stopped_now = !ti.rolling && rolling_;
+  const bool was_rolling = rolling_;
+  const double prev = beats_;
   rolling_ = ti.rolling;
   if (rolling_) beats_ = ti.beats;  // сетка Zynthian; иначе продолжаем свой счёт
+  // Граница доли пришлась ровно на стык блоков (счёт выровнялся по Zynthian): не потерять её.
+  if (rolling_ && was_rolling && !jumped && time_seen_ && set_.quantize) {
+    const int64_t a = (int64_t)std::floor(prev), c = (int64_t)std::floor(beats_);
+    if (c == a + 1) on_grid(true, ((c % bpb_) + bpb_) % bpb_ == 0);
+  }
   // Транспорт пошёл или перескочил: лупы в Quantize встают в фазу с позицией Zynthian.
   if (time_seen_ && pool_.ok()) {
     if (started) transport_start();
@@ -754,22 +777,47 @@ void Looper::transport_start() {
   for (int k = 0; k < kTracks; ++k) {
     Track& t = tr_[k];
     if (!t.stopped) {
-      resync(k);
+      if (!t.ustop) resync(k);
       continue;
     }
     t.stopped = false;
-    if (t.sgain > 0.001f) {  // не успела затихнуть: перескок через кроссфейд
-      resync(k);
-      continue;
-    }
-    // тишина: просто ставим позицию, огибающая сама нарастёт
-    if (t.synced && t.len && t.loop_beats > 0 && t.dir > 0 && t.rate_step == 0.0) {
-      double ph = std::fmod((beats_ - t.b0) / t.loop_beats, 1.0);
-      if (ph < 0) ph += 1.0;
-      t.pos = std::round(ph * (double)t.len);
-      if (t.pos >= (double)t.len) t.pos = 0.0;
-    } else {
-      t.pos = t.dir > 0 ? 0.0 : (double)(t.len ? t.len - 1 : 0);
+    if (!t.ustop) wake(k);  // остановленные педалью Play/Stop ждут педали
+  }
+}
+
+// Дорожка снова звучит: в фазе с сеткой (записанные в Free — с начала цикла).
+void Looper::wake(int ti) {
+  Track& t = tr_[ti];
+  if (t.sgain > 0.001f) {  // не успела затихнуть: перескок через кроссфейд
+    resync(ti);
+    return;
+  }
+  // тишина: просто ставим позицию, огибающая сама нарастёт
+  if (t.synced && t.len && t.loop_beats > 0 && t.dir > 0 && t.rate_step == 0.0) {
+    double ph = std::fmod((beats_ - t.b0) / t.loop_beats, 1.0);
+    if (ph < 0) ph += 1.0;
+    t.pos = std::round(ph * (double)t.len);
+    if (t.pos >= (double)t.len) t.pos = 0.0;
+  } else {
+    t.pos = t.dir > 0 ? 0.0 : (double)(t.len ? t.len - 1 : 0);
+  }
+}
+
+// Play/Stop: стоп глушит играющие дорожки (овердаб закрывается), старт запускает их
+// с начала такта в фазе с сеткой. Действует только на лупер, транспорт Zynthian не трогает.
+// Явный старт запускает и дорожки, остановленные транспортом.
+void Looper::apply_playstop(bool stop) {
+  user_stop_ = stop;
+  for (int k = 0; k < kTracks; ++k) {
+    Track& t = tr_[k];
+    if (t.st != TState::Play && t.st != TState::Dub) continue;
+    if (stop) {
+      if (t.st == TState::Dub) end_dub(k);
+      t.rev_wait = -1;
+      t.ustop = true;
+    } else if (t.ustop || t.stopped) {
+      t.ustop = t.stopped = false;
+      wake(k);
     }
   }
 }
@@ -833,7 +881,7 @@ TrackView Looper::view(int i) const {
     case TState::Dub: v.state = 4; break;
   }
   v.muted = t.muted;
-  v.stopped = t.stopped;
+  v.stopped = t.stopped || t.ustop;
   v.reversed = t.dir < 0;
   v.can_undo = t.undo_n > 0 || t.st == TState::Dub;
   v.can_redo = t.redo_n > 0;

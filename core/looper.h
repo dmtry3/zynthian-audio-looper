@@ -12,7 +12,7 @@ namespace alp {
 constexpr int kTracks = 4;
 constexpr uint32_t kMaxUndo = 1024;  // записей undo на дорожку (дальше старые вливаются в основу)
 
-enum class Cmd : uint8_t { Rec, Undo, Redo, ResetTrack, ResetAll, Mute, Reverse, TrackNext, TrackPrev };
+enum class Cmd : uint8_t { Rec, Undo, Redo, ResetTrack, ResetAll, Mute, Reverse, TrackNext, TrackPrev, PlayStop };
 
 // Настройки (виджет настроек). Меняются в любой момент, применяются со следующего блока.
 struct Settings {
@@ -80,6 +80,8 @@ class Looper {
 
   // RT: состояние
   int active() const { return active_; }
+  bool user_stopped() const { return user_stop_; }
+  int playstop_pending() const { return ps_pending_; }
   double grid_beats() const { return beats_; }  // доли по сетке лупера (при стоящем транспорте — от первой записи)
   TrackView view(int i) const;
   float pool_fill() const;
@@ -130,6 +132,7 @@ class Looper {
     // mute
     bool muted = false, mute_pending = false;
     bool stopped = false;    // транспорт Zynthian остановлен: дорожка затихла и ждёт пуска
+    bool ustop = false;      // остановлена педалью Play/Stop: ждёт повторного нажатия
     float sgain = 1.0f;      // огибающая остановки по транспорту
     float gain = 1.0f;
     bool busy = false;       // рабочий поток считает undo/redo этой дорожки
@@ -153,6 +156,8 @@ class Looper {
   void resync(int ti);
   void transport_stop();
   void transport_start();
+  void wake(int ti);
+  void apply_playstop(bool stop);
   void leave_track(int ti);
 
   // undo/redo и память
@@ -185,6 +190,8 @@ class Looper {
   int bpb_ = 4;
   bool rolling_ = false;
   bool time_seen_ = false;
+  bool user_stop_ = false;  // лупы остановлены педалью Play/Stop
+  int ps_pending_ = 0;      // ждёт границы: 1 — стоп, 2 — старт
   // рабочий поток: одно задание за раз
   bool job_pending_ = false, job_running_ = false;
   WorkMsg job_{};

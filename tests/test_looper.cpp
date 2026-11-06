@@ -518,6 +518,53 @@ static void test_transport_stop_start() {
   s.wav("transport_stop_start");
 }
 
+// Play/Stop: стоп на границе такта (транспорт идёт дальше), старт с начала такта в фазе.
+static void test_play_stop() {
+  const uint64_t BAR = 96000;
+  Sim s(64, true);
+  s.ti.rolling = true;
+  s.set.length[0] = 1;
+  s.apply();
+  s.in_l = sine(180.0, 0.4f);
+  s.cmd(Cmd::Rec);
+  s.run(BAR * 2 + BLOCK * 8);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(BAR / 4);                         // четверть такта
+  s.cmd(Cmd::PlayStop);
+  CHECK(s.lp->playstop_pending() == 1);
+  s.run(BAR / 2);                         // ещё до черты: играет
+  CHECK(!s.v().stopped && rms(s.slice(s.t - 4800, 4800)) > 0.1f);
+  s.run(BAR / 2);                         // черта прошла, 200 мс затухания прошли
+  CHECK(s.v().stopped && s.lp->user_stopped());
+  CHECK(rms(s.slice(s.t - 4800, 4800)) < 1e-6f);
+  s.cmd(Cmd::PlayStop);
+  s.cmd(Cmd::PlayStop);                   // отмена до черты
+  s.run(BAR * 2);
+  CHECK(s.v().stopped);
+  s.cmd(Cmd::PlayStop);
+  s.run(BAR + BLOCK * 4);                 // старт на черте
+  CHECK(!s.v().stopped && rms(s.slice(s.t - 4800, 4800)) > 0.1f);
+  const uint64_t want = s.t % BAR;        // цикл = такт, сетка от t = 0
+  const uint64_t got = (uint64_t)std::llround(s.v().pos * (double)BAR) % BAR;
+  int64_t diff = (int64_t)got - (int64_t)want;
+  CHECK(diff >= -2 && diff <= 2);
+  CHECK(s.max_step(BAR * 2, s.t) < 0.03f);
+  // остановили педалью — пуск транспорта не включает
+  s.cmd(Cmd::PlayStop);
+  s.run(BAR * 2);
+  CHECK(s.v().stopped);
+  const double frozen = s.beats_now();
+  s.ti.rolling = false;
+  s.beats_at = [frozen](uint64_t) { return frozen; };
+  s.run(BAR / 2);
+  const uint64_t t0 = s.t;
+  s.ti.rolling = true;
+  s.beats_at = [t0](uint64_t t) { return (double)(t - t0) * 120.0 / 60.0 / SR; };
+  s.run(BAR);
+  CHECK(s.v().stopped);
+  s.wav("play_stop");
+}
+
 int main() {
   test_record_play();
   test_overdubs_undo();
@@ -526,6 +573,7 @@ int main() {
   test_reverse_quantized();
   test_transport_restart_resync();
   test_transport_stop_start();
+  test_play_stop();
   test_quantize();
   test_rop();
   test_reset();

@@ -226,12 +226,13 @@ void do_action(Plugin* pl, Action a) {
     case A_REVERSE: lp->command(Cmd::Reverse); break;
     case A_TRK_NEXT: lp->command(Cmd::TrackNext); break;
     case A_TRK_PREV: lp->command(Cmd::TrackPrev); break;
+    case A_PLAY: lp->command(Cmd::PlayStop); break;
     // Парты появятся на этапе 2; пока все пустые, а из пустого парта переход сразу (ТЗ).
     case A_PART_NEXT: pl->part = wrap4(pl->part + 1); break;
     case A_PART_PREV: pl->part = wrap4(pl->part - 1); break;
     case A_W_LOOP: pl->widget = 0; break;
     case A_W_MIXER: pl->widget = 1; break;
-    default: break;  // Lock — этап 2, Play/Stop — этап 6
+    default: break;  // Lock — этап 2
   }
   pl->last_action = a;
   ++pl->action_count;
