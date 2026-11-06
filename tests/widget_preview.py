@@ -155,8 +155,7 @@ def main():
     m["o_action"], m["o_act_cnt"] = 1.0, 1.0
     wdg.update()
     fills = [wdg.widget_canvas.itemcget(i, "fill") for i in wdg.widget_canvas.find_all()]
-    check("нажатие Rec всплывает красной плашкой", mod.COL_REC in fills and "REC / DUB" in texts(wdg))
-    wdg.toast_until = 0.0
+    check("нажатие Rec горит красным во вкладке", mod.RED in fills and "REC / DUB" in texts(wdg))
 
     m["o_bar"], m["o_beat"] = 1.0, 0.05
     wdg.update()
@@ -166,11 +165,7 @@ def main():
     m["o_bpb"], m["o_beat"] = 3.0, 2.5
     wdg.update()
     ovals = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "oval"]
-    check("3 точки долей + 4 точки партов", len(ovals) == 3 + 4 and "2.3" in texts(wdg) and "3/4" in texts(wdg))
-
-    m["o_held"] = float(1 << 7)
-    wdg.update()
-    check("нажатая кнопка видна в строке диагностики", "T+" in texts(wdg))
+    check("3 точки долей + 4 точки партов + 4 круга дорожек", len(ovals) == 3 + 4 + 4 and "2.3" in texts(wdg) and "3/4" in texts(wdg))
 
     m["o_tsrc"] = 0.0
     wdg.update()
@@ -179,14 +174,13 @@ def main():
 
     m["o_widget"], m["o_track"] = 1.0, 2.0
     wdg.update()
-    check("активный виджет Mixer", "MIXER" in texts(wdg))
+    check("активный виджет Mixer: кнопки M и MASTER", texts(wdg).count("M") == 4 and "MASTER" in texts(wdg))
     no_overlap("800x480, Mixer")
     m["o_widget"] = 0.0
 
     m["o_action"], m["o_act_cnt"] = 99.0, 5.0
     wdg.update()
-    check("неизвестный код действия не ломает виджет", True)
-    wdg.toast_until = 0.0
+    check("неизвестный код действия не ломает виджет", "READY" in texts(wdg))
 
     # виджет в Zynthian занимает только часть экрана: проверяем и маленькие размеры
     m["o_bpm"], m["o_bar"], m["o_bpb"] = 133.5, 127.0, 7.0
@@ -195,7 +189,6 @@ def main():
         root.update()
         wdg.update()
         root.update()
-        wdg.toast_until = 0.0
         wdg.update()
         no_overlap(size)
 
