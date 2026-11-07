@@ -223,17 +223,46 @@ class _Frame:
         self.prev = {}      # раздел -> [(id, тип, координаты, опции)]
         self.order = []     # разделы прошлого кадра
         self.cur = None
+        self.pkeys = {}     # раздел -> ключ данных, из которых он нарисован
+        self.phits = {}     # раздел -> зоны касаний, которые он добавил
 
-    def begin(self):
+    def begin(self, hits):
+        """hits — список зон касаний кадра: раздел, взятый из прошлого кадра, возвращает в него свои."""
         self.ops = {}
         self.secs = []
+        self.keys = {}
+        self.reused = set()
+        self.hits = hits
+        self.hsec = {}      # раздел -> индекс начала его зон касаний
+        self.phits_new = {}
+        self.open = None
         self.section("base")
 
-    def section(self, name):
-        if name not in self.ops:
-            self.ops[name] = []
-            self.secs.append(name)
+    def _close(self):
+        if self.open is not None and self.open not in self.reused:
+            self.phits_new[self.open] = self.hits[self.hsec[self.open]:]
+        self.open = None
+
+    def section(self, name, key=None):
+        """Новый раздел. С ключом: если раздел с тем же ключом был в прошлом кадре — он берётся
+        целиком оттуда (True), и рисовать его не нужно."""
+        self._close()
+        assert name not in self.ops, "раздел %s уже был в кадре" % name
+        self.secs.append(name)
+        self.keys[name] = key
+        if key is not None and self.pkeys.get(name) == key and name in self.prev:
+            self.ops[name] = None
+            self.reused.add(name)
+            self.hits.extend(self.phits.get(name, []))
+            self.phits_new[name] = self.phits.get(name, [])
+            self.cur = None
+            self.open = name
+            return True
+        self.ops[name] = []
         self.cur = self.ops[name]
+        self.hsec[name] = len(self.hits)
+        self.open = name
+        return False
 
     def _rec(self, typ, args, kw):
         coords = []
@@ -253,11 +282,17 @@ class _Frame:
     def create_image(self, *a, **kw): self._rec("image", a, kw)
 
     def commit(self):
+        self._close()
         c = self.canvas
         new = {}
         last = None    # фигура, поверх которой ставить новую (порядок слоёв как в коде рисования)
         for name in self.secs:
             old = self.prev.get(name, [])
+            if name in self.reused:  # раздел не менялся: на холсте всё как было
+                new[name] = old
+                if old:
+                    last = old[-1][0]
+                continue
             out = []
             for i, (typ, coords, kw) in enumerate(self.ops[name]):
                 o = old[i] if i < len(old) else None
@@ -285,6 +320,7 @@ class _Frame:
                 for o in self.prev[name]:
                     c.delete(o[0])
         self.prev, self.order = new, list(self.secs)
+        self.pkeys, self.phits = self.keys, self.phits_new
 
 
 class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
@@ -568,7 +604,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             c.create_rectangle(x0, sy1 - seg * 0.62, x1, sy1, fill=col, width=0)
 
     def _master(self, x0, y0, x1, y1):
-        self.cv.section("master")
+        if self.cv.section("master", (x0, y0, x1, y1)):
+            return
         lab_h = min((y1 - y0) * 0.08, 18)
         self._text((x0 + x1) / 2, y0 + lab_h / 2, "MASTER", x1 - x0, lab_h, TEXT)
         mw = (x1 - x0) * 0.28
@@ -615,8 +652,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
     def _draw(self):
         m = self.monitors or {}
         c = self.cv
-        c.begin()
         self.hits = []
+        c.begin(self.hits)
         w, h = max(self.width, 120), max(self.height, 80)
         now = time.monotonic()
         dt = min(0.5, max(0.0, now - self.mon_t)) if self.mon_t else 0.0
@@ -716,10 +753,15 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
 
     def _tempo_bar(self, st, x0, y0, x1, y1, now):
         c = self.cv
-        c.section("tempo")
         hh, w = y1 - y0, x1 - x0
-        if now < self.flash_until:  # вспышка: сразу светло-серый, гаснет к чёрному
-            v = int(24 + 120 * (self.flash_until - now) / FLASH_S)
+        flash = int(24 + 120 * (self.flash_until - now) / FLASH_S) if now < self.flash_until else None
+        beat_i = min(st["bpb"] - 1, max(0, int(st["beat"]))) if st["src"] else -1
+        # меняется раз в долю (и во время вспышки сильной доли)
+        if c.section("tempo", (x0, y0, x1, y1, flash, st["src"], st["bpm"], st["bpb"], st["bar"], beat_i,
+                               self.settings_open)):
+            return
+        if flash is not None:  # вспышка: сразу светло-серый, гаснет к чёрному
+            v = flash
             c.create_rectangle(x0, y0, x1, y1, fill="#%02x%02x%02x" % (v, v, v), width=0)
         cy = (y0 + y1) / 2
         if st["src"]:
@@ -727,11 +769,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             s = "%.1f" % bpm if abs(bpm - round(bpm)) > 0.05 else "%d" % round(bpm)
             self._text(x0 + w * 0.015, cy, s, w * 0.13, hh * 0.86, TEXT, "w")
             self._text(x0 + w * 0.15, cy + hh * 0.12, "BPM", w * 0.06, hh * 0.4, DIM, "w")
-            beat_i = min(st["bpb"] - 1, max(0, int(st["beat"])))
             self._text(x0 + w * 0.30, cy, "%d.%d" % (st["bar"] + 1, beat_i + 1), w * 0.12, hh * 0.86, TEXT)
             self._text(x0 + w * 0.38, cy + hh * 0.12, "%d/4" % st["bpb"], w * 0.06, hh * 0.4, DIM, "w")
         else:
-            beat_i = -1
             self._text(x0 + w * 0.015, cy, "NO TEMPO", w * 0.3, hh * 0.7, RED, "w")
         # точки долей: первая крупнее и ярче, текущая горит
         gear_w = hh * 1.3
@@ -766,22 +806,11 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         blink = int(time.monotonic() * 3) % 2 == 0
         beats_per_s = st["bpm"] / 60.0 if st["bpm"] > 0 else 2.0
         for i in range(n):
-            c.section("row%d" % i)
             tr = st["tracks"][i]
             ry0, ry1 = y0 + i * row_h, y0 + (i + 1) * row_h
             cy = (ry0 + ry1) / 2
-            # точка парта (строка i = парт i), как столбик точек у Aeros:
-            # пустой — контур, записанный — заливка, текущий — зелёный, ожидающий — мигает
-            px = x0 + part_w / 2
-            pr = u * 0.11
             recorded = bool(st["parts"] >> i & 1)
             current, pending = i == st["part"], i == st["pend"]
-            col = GREEN if (current or pending) else ("#b0b0b0" if recorded else DIM)
-            if not (pending and not blink):
-                if recorded or current:
-                    c.create_oval(px - pr, cy - pr, px + pr, cy + pr, fill=col, width=0)
-                else:
-                    c.create_oval(px - pr, cy - pr, px + pr, cy + pr, outline=col, width=max(1, int(pr * 0.35)))
             # цвет дорожки по приоритету из ТЗ; ожидание такта мигает красным
             active = i == st["track"]
             state = tr["state"]
@@ -791,43 +820,62 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             elif tr["stopped"]:
                 color = mix(color, BG, 0.55)  # транспорт стоит: дорожка затихла и ждёт пуска
             has_loop = state in (ST_PLAY, ST_DUB) and tr["len"] > 0
-            # круг позиции с номером, под ним скорость
             pie_r = u * 0.3
             pcx, pcy = x0 + part_w + u * 0.42, cy - u * 0.1
+            wx0 = x0 + part_w + u * 0.9
+            bw = wx1 - wx0
+            # неподвижная часть строки: перерисовывается, только когда меняются её данные
+            d = self._read_peaks(i) if (has_loop or state == ST_REC) else None
+            key = (x0, y0, x1, y1, n, state, color, has_loop, recorded, current, pending,
+                   blink if pending else None, round(tr["speed"], 2), st["quantize"], st["bpm"], st["bpb"],
+                   round(tr["len"], 2) if state == ST_REC else tr["len"],
+                   (d["seq"], d["live"], d.get("rec") and d["rec"][0]) if d else None,
+                   self._zval("len%d" % (i + 1)) if state == ST_REC else None)
+            if not c.section("row%d" % i, key):
+                # точка парта (строка i = парт i), как столбик точек у Aeros:
+                # пустой — контур, записанный — заливка, текущий — зелёный, ожидающий — мигает
+                px = x0 + part_w / 2
+                pr = u * 0.11
+                col = GREEN if (current or pending) else ("#b0b0b0" if recorded else DIM)
+                if not (pending and not blink):
+                    if recorded or current:
+                        c.create_oval(px - pr, cy - pr, px + pr, cy + pr, fill=col, width=0)
+                    else:
+                        c.create_oval(px - pr, cy - pr, px + pr, cy + pr, outline=col, width=max(1, int(pr * 0.35)))
+                sp = tr["speed"]
+                self._text(pcx, cy + u * 0.37, "%.2f×" % sp, u * 0.8, u * 0.22,
+                           ORANGE if abs(sp - 1.0) > 1e-3 else DIM, bold=abs(sp - 1.0) > 1e-3)
+                self.hits.append((x0 + part_w, cy + u * 0.22, x0 + part_w + u * 0.85, cy + u * 0.5, "speed", i))
+                # волна цикла: сумма цветом дорожки, слои овердабов полупрозрачно поверх
+                if state == ST_REC:
+                    self._rec_wave(st, i, wx0, wx1, cy, row_h, color, u)
+                if has_loop:
+                    self._waves(i, wx0, wx1, cy, row_h * 0.42, color, tr["pos"], tr["reversed"])
+                    if st["quantize"]:
+                        # тонкие линии долей, толстые — тактов
+                        beats = tr["len"] * beats_per_s
+                        nb = int(round(beats))
+                        if 0 < nb <= 64:
+                            for b in range(1, nb):
+                                x = wx0 + bw * b / beats
+                                bar_line = b % st["bpb"] == 0
+                                c.create_line(x, cy - row_h * 0.38, x, cy + row_h * 0.38,
+                                              fill="#9a9a9a" if bar_line else "#3c3c3c", width=2 if bar_line else 1)
+                    c.create_line(wx1 - 1, ry0 + 3, wx1 - 1, ry1 - 3, fill=RED, width=2)  # конец цикла
+                elif state != ST_REC:
+                    c.create_line(wx0, cy, wx1, cy, fill=GRID, width=1)
+            # подвижная часть: круг позиции с номером, замок, линия позиции — каждый кадр
+            c.section("rowp%d" % i)
             frac = tr["pos"] if has_loop else (1.0 if state == ST_REC else 0.0)
             self._pie(pcx, pcy, pie_r, color, frac, empty=not (has_loop or state == ST_REC))
             num_col = TEXT if (has_loop or state == ST_REC) else (GREEN if active else DIM)
             self._text(pcx, pcy, str(i + 1), pie_r * 1.3, pie_r * 1.3, num_col)
             if tr["locked"]:
                 self._lock_icon(pcx + pie_r * 1.05, cy - u * 0.24, u * 0.11)
-            sp = tr["speed"]
-            self._text(pcx, cy + u * 0.37, "%.2f×" % sp, u * 0.8, u * 0.22,
-                       ORANGE if abs(sp - 1.0) > 1e-3 else DIM, bold=abs(sp - 1.0) > 1e-3)
-            self.hits.append((x0 + part_w, cy + u * 0.22, x0 + part_w + u * 0.85, cy + u * 0.5, "speed", i))
-            # волна цикла: сумма цветом дорожки (сыгранное ярче), слои овердабов полупрозрачно поверх
-            wx0 = x0 + part_w + u * 0.9
-            bw = wx1 - wx0
-            if state == ST_REC:
-                self._rec_wave(st, i, wx0, wx1, cy, row_h, color, u)
             if has_loop:
-                self._waves(i, wx0, wx1, cy, row_h * 0.42, color, tr["pos"], tr["reversed"])
-            if has_loop:
-                if st["quantize"]:
-                    # тонкие линии долей, толстые — тактов
-                    beats = tr["len"] * beats_per_s
-                    nb = int(round(beats))
-                    if 0 < nb <= 64:
-                        for b in range(1, nb):
-                            x = wx0 + bw * b / beats
-                            bar_line = b % st["bpb"] == 0
-                            c.create_line(x, cy - row_h * 0.38, x, cy + row_h * 0.38,
-                                          fill="#9a9a9a" if bar_line else "#3c3c3c", width=2 if bar_line else 1)
-                c.create_line(wx1 - 1, ry0 + 3, wx1 - 1, ry1 - 3, fill=RED, width=2)  # конец цикла
                 x = wx0 + bw * min(1.0, max(0.0, tr["pos"]))
                 c.create_line(x, ry0 + 3, x, ry1 - 3, fill=TEXT, width=2)              # позиция
                 c.create_oval(x - 3, ry0 + 1, x + 3, ry0 + 7, fill=TEXT, width=0)
-            elif state != ST_REC:
-                c.create_line(wx0, cy, wx1, cy, fill=GRID, width=1)
         self._master(wx1 + 6, y0, x1 - 4, y1)
 
     # ---------- волны ----------
@@ -1023,7 +1071,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         return cols
 
     def _mixer(self, st, x0, y0, x1, y1):
-        """Mixer по образцу Aeros: дорожки играющего парта (2, 4 или 6), справа Dry и Master."""
+        """Mixer по образцу Aeros: дорожки играющего парта (2, 4 или 6), справа Dry и Master.
+        Каждая полоса — разделы: неподвижная часть, индикатор (перерисовывается, только когда меняется
+        число горящих сегментов), ручка фейдера, круг позиции (каждый кадр)."""
         c = self.cv
         m = self.monitors or {}
         w, hh = x1 - x0, y1 - y0
@@ -1032,8 +1082,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         cw = (w - side_w - 6) / float(ng)
         ew = min(cw, (w - side_w - 6) / 4.0)   # ширина ручек: в 2×2 как в 4×4, по центру полосы
         base = st["part"] * ng
+        geo = (x0, y0, x1, y1, ng)
+        lab_h = max(10, hh * 0.07)
         for i in range(ng):
-            c.section("mix%d" % i)
             tr = st["tracks"][i]
             n = base + i + 1
             cx0 = x0 + i * cw
@@ -1042,85 +1093,107 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             active = i == st["track"]
             col = track_color(tr["state"], tr["muted"], tr["reversed"], active)
             has_loop = tr["state"] in (ST_PLAY, ST_DUB)
-            if i:
-                c.create_line(cx0, y0, cx0, y1, fill="#1c1c1c", width=1)
-            # круг позиции с номером
             r = min(ew * 0.16, hh * 0.075)
-            self._pie(mid, y0 + r + 3, r, col, tr["pos"] if has_loop else 0.0, empty=not has_loop)
-            self._text(mid, y0 + r + 3, str(i + 1), r * 1.3, r * 1.3, TEXT if has_loop else col)
-            # панорама: полоса, метка центра, бегунок
             pan = self._zval("pan%d" % n)
+            chm = self._zval("chm%d" % n)  # 0 стерео, 1 только L, 2 только R
+            db = self._zfloat("lev%d" % n)
             py0 = y0 + 2 * r + hh * 0.05
             ph = max(10, hh * 0.07)
-            px0, px1 = ex0 + ew * 0.12, ex0 + ew * 0.88
-            c.create_rectangle(px0, py0, px1, py0 + ph, fill="#1a1a1a", width=0)
-            c.create_line((px0 + px1) / 2, py0, (px0 + px1) / 2, py0 + ph, fill=DIM)
-            kx = (px0 + px1) / 2 + (px1 - px0) / 2 * pan / 100.0
-            c.create_rectangle(kx - 3, py0 - 1, kx + 3, py0 + ph + 1, fill=TEXT, width=0)
-            self.hits.append((px0 - 4, py0 - 6, px1 + 4, py0 + ph + 6, "pan", "pan%d" % n))
-            # кнопки: режим канала и M
             by0 = py0 + ph + hh * 0.04
             bh = max(14, hh * 0.09)
-            bw = (ew * 0.76 - 4) / 2
-            chm = self._zval("chm%d" % n)  # 0 стерео, 1 только L, 2 только R
-            split = chm in (1, 2)
-            bx = ex0 + ew * 0.12
-            c.create_rectangle(bx, by0, bx + bw, by0 + bh, fill="#3a2a5a" if split else "#262626", width=0)
-            self._text(bx + bw / 2, by0 + bh / 2, ("ST", "L", "R")[chm if split else 0], bw * 0.9, bh * 0.7,
-                       PURPLE if split else "#b0b0b0")
-            self.hits.append((bx, by0, bx + bw, by0 + bh, "chm", "chm%d" % n))
-            mx = bx + bw + 4
-            c.create_rectangle(mx, by0, mx + bw, by0 + bh, fill=GRAY if tr["muted"] else mix(col, BG, 0.4), width=0)
-            self._text(mx + bw / 2, by0 + bh / 2, "M", bw * 0.8, bh * 0.75, TEXT)
-            self.hits.append((mx, by0, mx + bw, by0 + bh, "mute", i + 1))
-            # фейдер с индикатором пика и подпись дБ
-            lab_h = max(10, hh * 0.07)
             fy0, fy1 = by0 + bh + hh * 0.05, y1 - lab_h - 4
-            db = self._zfloat("lev%d" % n)
-            self._fader(mid, fy0, fy1, ew, db, float(m.get("o_pk%d" % (i + 1), 0.0)), None, "lev%d" % n)
-            self._text(mid, y1 - lab_h / 2 - 2, "-\u221e" if db <= MIN_DB else "%+.1f" % db, ew * 0.8, lab_h, DIM,
-                       bold=False)
+            if not c.section("mix%d" % i, (geo, i, n, col, tr["muted"], pan, chm, round(db, 1))):
+                if i:
+                    c.create_line(cx0, y0, cx0, y1, fill="#1c1c1c", width=1)
+                # панорама: полоса, метка центра, бегунок
+                px0, px1 = ex0 + ew * 0.12, ex0 + ew * 0.88
+                c.create_rectangle(px0, py0, px1, py0 + ph, fill="#1a1a1a", width=0)
+                c.create_line((px0 + px1) / 2, py0, (px0 + px1) / 2, py0 + ph, fill=DIM)
+                kx = (px0 + px1) / 2 + (px1 - px0) / 2 * pan / 100.0
+                c.create_rectangle(kx - 3, py0 - 1, kx + 3, py0 + ph + 1, fill=TEXT, width=0)
+                self.hits.append((px0 - 4, py0 - 6, px1 + 4, py0 + ph + 6, "pan", "pan%d" % n))
+                # кнопки: режим канала и M
+                bw = (ew * 0.76 - 4) / 2
+                split = chm in (1, 2)
+                bx = ex0 + ew * 0.12
+                c.create_rectangle(bx, by0, bx + bw, by0 + bh, fill="#3a2a5a" if split else "#262626", width=0)
+                self._text(bx + bw / 2, by0 + bh / 2, ("ST", "L", "R")[chm if split else 0], bw * 0.9, bh * 0.7,
+                           PURPLE if split else "#b0b0b0")
+                self.hits.append((bx, by0, bx + bw, by0 + bh, "chm", "chm%d" % n))
+                mx = bx + bw + 4
+                c.create_rectangle(mx, by0, mx + bw, by0 + bh, fill=GRAY if tr["muted"] else mix(col, BG, 0.4),
+                                   width=0)
+                self._text(mx + bw / 2, by0 + bh / 2, "M", bw * 0.8, bh * 0.75, TEXT)
+                self.hits.append((mx, by0, mx + bw, by0 + bh, "mute", i + 1))
+                self._text(mid, y1 - lab_h / 2 - 2, "-\u221e" if db <= MIN_DB else "%+.1f" % db, ew * 0.8, lab_h,
+                           DIM, bold=False)
+            # фейдер: индикатор пика и ручка уровня
+            pk = float(m.get("o_pk%d" % (i + 1), 0.0))
+            self._fader(geo, "mix%d" % i, mid, fy0, fy1, ew, db, pk, None, "lev%d" % n)
+            # круг позиции с номером — каждый кадр
+            c.section("mixp%d" % i)
+            self._pie(mid, y0 + r + 3, r, col, tr["pos"] if has_loop else 0.0, empty=not has_loop)
+            self._text(mid, y0 + r + 3, str(i + 1), r * 1.3, r * 1.3, TEXT if has_loop else col)
         # справа: Dry и Master
-        c.section("mixside")
         sx0 = x1 - side_w
-        c.create_line(sx0 - 3, y0, sx0 - 3, y1, fill="#2a2a2a", width=1)
         half = side_w / 2.0
-        lab_h = max(10, hh * 0.07)
         top_h = max(14, hh * 0.09)
-        for k, (sym, label) in enumerate((("dry", "DRY"), ("mst_db", "MASTER"))):
+        lim = self._zval("limiter") == 1
+        dbs = (self._zfloat("dry"), self._zfloat("mst_db"))
+        if not c.section("mixside", (geo, lim, round(dbs[0], 1), round(dbs[1], 1))):
+            c.create_line(sx0 - 3, y0, sx0 - 3, y1, fill="#2a2a2a", width=1)
+            for k, label in enumerate(("DRY", "MASTER")):
+                mid = sx0 + half * (k + 0.5)
+                self._text(mid, y0 + top_h / 2 + 2, label, half * 0.9, top_h * 0.8, TEXT)
+                if k == 1:
+                    ly0 = y0 + top_h + 6
+                    c.create_rectangle(mid - half * 0.4, ly0, mid + half * 0.4, ly0 + top_h,
+                                       fill="#2a3a20" if lim else "#262626", width=0)
+                    self._text(mid, ly0 + top_h / 2, "LIM", half * 0.7, top_h * 0.7, GREEN if lim else DIM)
+                    self.hits.append((mid - half * 0.4, ly0, mid + half * 0.4, ly0 + top_h, "lim", None))
+                self._text(mid, y1 - lab_h / 2 - 2, "-\u221e" if dbs[k] <= MIN_DB else "%+.1f" % dbs[k], half * 0.9,
+                           lab_h, DIM, bold=False)
+        for k, sym in enumerate(("dry", "mst_db")):
             mid = sx0 + half * (k + 0.5)
-            self._text(mid, y0 + top_h / 2 + 2, label, half * 0.9, top_h * 0.8, TEXT)
-            db = self._zfloat(sym)
-            if sym == "mst_db":
-                lim = self._zval("limiter") == 1
-                ly0 = y0 + top_h + 6
-                c.create_rectangle(mid - half * 0.4, ly0, mid + half * 0.4, ly0 + top_h,
-                                   fill="#2a3a20" if lim else "#262626", width=0)
-                self._text(mid, ly0 + top_h / 2, "LIM", half * 0.7, top_h * 0.7, GREEN if lim else DIM)
-                self.hits.append((mid - half * 0.4, ly0, mid + half * 0.4, ly0 + top_h, "lim", None))
-                pk = (float(m.get("o_mpk_l", 0.0)), float(m.get("o_mpk_r", 0.0)))
-            else:
-                pk = None
-            fy0 = y0 + top_h * 2 + 14
-            self._fader(mid, fy0, y1 - lab_h - 4, half, db, pk[0] if pk else None, pk[1] if pk else None, sym)
-            self._text(mid, y1 - lab_h / 2 - 2, "-\u221e" if db <= MIN_DB else "%+.1f" % db, half * 0.9, lab_h, DIM,
-                       bold=False)
+            pk = (float(m.get("o_mpk_l", 0.0)), float(m.get("o_mpk_r", 0.0))) if k == 1 else (None, None)
+            self._fader(geo, sym, mid, y0 + top_h * 2 + 14, y1 - lab_h - 4, half, dbs[k], pk[0], pk[1], sym)
 
-    def _fader(self, mid, fy0, fy1, cw, db, pk_l, pk_r, sym):
-        """Сдвоенная шкала сегментов (горит по пику) и белая ручка уровня; тянется пальцем."""
+    def _fader(self, geo, name, mid, fy0, fy1, cw, db, pk_l, pk_r, sym):
+        """Сдвоенная шкала сегментов (горит по пику) и белая ручка уровня; тянется пальцем.
+        Шкала — свой раздел: перерисовывается, только когда меняется число горящих сегментов."""
         c = self.cv
         fw = cw * 0.11
         n = max(6, int((fy1 - fy0) / 8))
         seg = (fy1 - fy0) / n
-        for side, pk in ((-1, pk_l), (1, pk_r if pk_r is not None else pk_l)):
-            fx = mid + side * fw * 0.9
-            lit = int(round(lin_to_frac(pk) * n)) if pk is not None else 0
-            for j in range(n):
-                frac = (j + 1) / n
-                k = 2 if frac > 0.92 else (1 if frac > 0.78 else 0)
-                colr = METER_ON[k] if j < lit else "#1e1e1e"
-                sy = fy1 - j * seg
-                c.create_rectangle(fx - fw / 2, sy - seg * 0.55, fx + fw / 2, sy, fill=colr, width=0)
+        sides = ((-1, pk_l), (1, pk_r if pk_r is not None else pk_l))
+        lits = tuple(int(round(lin_to_frac(pk) * n)) if pk is not None else 0 for _, pk in sides)
+        # фон столбиков, до трёх цветных полос по уровню (зелёная, жёлтая, красная зоны) и маска
+        # промежутков между сегментами: на кадр меняются только полосы
+        zones = (0, int(0.78 * n), int(0.92 * n), n)
+        if not c.section(name + "m0", (geo, n)):
+            for side, _ in sides:
+                fx = mid + side * fw * 0.9
+                c.create_rectangle(fx - fw / 2, fy1 - (n - 1) * seg - seg * 0.55, fx + fw / 2, fy1, fill="#1e1e1e",
+                                   width=0)
+        if not c.section(name + "m1", (geo, lits)):
+            for (side, _), lit in zip(sides, lits):
+                fx = mid + side * fw * 0.9
+                for k in range(3):
+                    a_, b_ = zones[k], min(lit, zones[k + 1])
+                    if b_ > a_:
+                        c.create_rectangle(fx - fw / 2, fy1 - (b_ - 1) * seg - seg * 0.55, fx + fw / 2,
+                                           fy1 - a_ * seg, fill=METER_ON[k], width=0, state="normal")
+                    else:
+                        c.create_rectangle(fx - fw / 2, fy1, fx + fw / 2, fy1, fill=METER_ON[k], width=0,
+                                           state="hidden")
+        if not c.section(name + "m2", (geo, n)):
+            for side, _ in sides:
+                fx = mid + side * fw * 0.9
+                for j in range(n - 1):
+                    sy = fy1 - j * seg
+                    c.create_rectangle(fx - fw / 2 - 1, sy - seg, fx + fw / 2 + 1, sy - seg * 0.55, fill=BG, width=0)
+        if c.section(name + "k", (geo, round(db, 2))):
+            return
         # метка 0 дБ
         z = fy1 - (fy1 - fy0) * 0.75
         c.create_line(mid - cw * 0.3, z, mid - cw * 0.22, z, fill=DIM)
@@ -1305,7 +1378,6 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
     def _tabs(self, st, x0, y0, x1, y1, now):
         """Три вкладки снизу, как у Aeros: парт, дорожка и что сделает следующее нажатие Rec."""
         c = self.cv
-        c.section("tabs")
         gap = 4
         tw = (x1 - x0 - gap * 2) / 3.0
         if st["rec_next"] and st["pend"] >= 0:
@@ -1329,6 +1401,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             items = [(part_txt, GREEN),
                      ("TRACK %d" % (st["track"] + 1), GREEN),
                      (hint, hcol)]
+        if c.section("tabs", (x0, y0, x1, y1, tuple(items), self.speed_slot, self.settings_open)):
+            return
         for k, (text, color) in enumerate(items):
             tx0 = x0 + k * (tw + gap)
             c.create_rectangle(tx0, y0, tx0 + tw, y1, fill=TAB, width=0)
