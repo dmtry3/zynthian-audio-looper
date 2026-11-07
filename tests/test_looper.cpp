@@ -369,6 +369,52 @@ static void test_rop() {
   CHECK(s.max_step(0, s.t) < 0.05f);
 }
 
+// ROP: «Следующая дорожка» во время записи закрывает цикл без овердаба (решение 2026-11-07).
+static void test_rop_leave() {
+  {  // Free: цикл закрывается сразу и играет
+    Sim s;
+    s.set.rop = true;
+    s.apply();
+    s.in_l = sine(220.0, 0.4f);
+    s.cmd(Cmd::Rec);
+    s.run(48000);
+    s.cmd(Cmd::TrackNext);
+    s.run(BLOCK * 8);
+    CHECK(s.lp->active() == 1 && s.v(0).state == 3 && s.v(0).layers == 1);
+    s.run(48000);
+    CHECK(s.v(0).state == 3);
+    // дальше на этой дорожке Rec — обычный овердаб
+    s.cmd(Cmd::TrackPrev);
+    s.cmd(Cmd::Rec);
+    CHECK(s.v(0).state == 4);
+    // а запись следующей дорожки в ROP закрывается обычным нажатием с овердабом
+    s.cmd(Cmd::TrackNext);
+    s.run(BLOCK * 8);
+    s.cmd(Cmd::Rec);
+    s.run(48000);
+    s.cmd(Cmd::Rec);
+    CHECK(s.v(1).state == 4);
+  }
+  {  // Quantize, длина Free: нажали Rec (цикл ждёт конца такта), потом ушли — без овердаба
+    Sim s(64, true);
+    s.set.rop = true;
+    s.apply();
+    s.in_l = sine(220.0, 0.4f);
+    s.cmd(Cmd::Rec);
+    s.run(48000 * 3);  // 1,5 такта при 120
+    s.cmd(Cmd::Rec);
+    s.cmd(Cmd::TrackNext);
+    s.run(48000 * 2);  // черта второго такта прошла
+    CHECK(s.v(0).state == 3 && s.v(0).layers == 1 && s.lp->active() == 1);
+    // и без нажатия Rec: уход во время записи закрывает на конце такта
+    s.cmd(Cmd::Rec);
+    s.run(48000 * 3);
+    s.cmd(Cmd::TrackNext);
+    s.run(48000 * 2);
+    CHECK(s.v(1).state == 3 && s.v(1).layers == 1);
+  }
+}
+
 // Reset: тап очищает и откатывается undo; удержание очищает всё и возвращает память.
 static void test_reset() {
   Sim s;
@@ -1247,6 +1293,7 @@ int main() {
   test_play_stop();
   test_peaks();
   test_rec_peaks();
+  test_rop_leave();
   test_grid();
   test_parts_lock();
   test_parts_edges();

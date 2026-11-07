@@ -195,6 +195,7 @@ class Looper {
     // запись основы
     int32_t rec = -1;
     uint64_t rec_frames = 0, rec_target = 0;
+    bool rec_no_dub = false;  // ROP: ушли на другую дорожку во время записи — после закрытия цикла без овердаба
     // волна записи: кадров в колонке, кадров в текущей колонке, её минимум и максимум
     uint64_t rpk_step = 0, rpk_n = 0;
     float rpk_mn = 0.0f, rpk_mx = 0.0f;

@@ -164,6 +164,7 @@ void Looper::start_rec(int ti) {
   t.rec = b;
   t.rec_frames = 0;
   t.rec_target = 0;
+  t.rec_no_dub = false;
   const int len_bars = set_.length[ti % ns_];  // длина задаётся по месту дорожки в парте
   if (set_.quantize && len_bars > 0) t.rec_target = (uint64_t)std::llround(len_bars * (double)bar_frames());
   // Quantize: запись начинается на черте такта, запоминаем её долю для подстройки фазы
@@ -277,7 +278,8 @@ void Looper::close_loop(int ti, uint64_t L) {
   t.synced = t.rec_q;
   t.loop_beats = std::fmax(1.0, std::round((double)L * t.rec_bpf));
   t.st = TState::Play;
-  if (set_.rop) start_dub(ti);
+  if (set_.rop && !t.rec_no_dub) start_dub(ti);
+  t.rec_no_dub = false;
   // Хвост, записанный после конца цикла, ложится на начало: стык и (в ROP) овердаб.
   for (uint64_t k = 0; k < d; ++k) {
     float l, r;
@@ -529,8 +531,10 @@ void Looper::apply_mute(int ti) {
 void Looper::leave_track(int ti) {
   Track& t = tr_[ti];
   if (t.st == TState::Armed) t.st = TState::Empty;
-  else if (t.st == TState::Rec) request_close(ti);
-  else if (t.st == TState::Dub) end_dub(ti);
+  else if (t.st == TState::Rec || t.st == TState::Closing) {
+    t.rec_no_dub = true;  // ROP: дорожку оставили — цикл закрывается и просто играет
+    if (t.st == TState::Rec) request_close(ti);
+  } else if (t.st == TState::Dub) end_dub(ti);
 }
 
 // ---------------------------------------------------------------- undo, redo, память
