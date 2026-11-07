@@ -32,7 +32,10 @@ class TempoClock {
     if (m.has_bpm && m.bpm >= 20.0 && m.bpm <= 400.0) bpm_ = m.bpm;
     if (m.has_bpb) {
       int v = (int)std::lround(m.bpb);
-      if (v >= 1 && v <= 16) bpb_ = v;
+      if (v >= 1 && v <= 16) {
+        bpb_ = v;
+        bpb_seen_ = true;
+      }
     }
     if (m.has_speed) rolling_ = m.speed != 0.0;
     if (m.has_pos && m.bar >= 0 && m.bar_beat >= 0) {
@@ -53,6 +56,18 @@ class TempoClock {
     frame_ += frames;
   }
 
+  // Долей в такте из настройки: действует, пока Zynthian не прислал свой размер такта.
+  void set_default_bpb(int v) {
+    if (v < 1 || v > 16) return;
+    if (!bpb_seen_ && v != bpb_) {
+      const int64_t b = bar();  // счёт не прыгает: тот же такт и доля с начала такта
+      const double bb = beats_ - (double)b * bpb_;
+      bpb_ = v;
+      beats_ = (double)b * bpb_ + (bb < bpb_ ? bb : 0.0);
+    }
+  }
+  bool bpb_from_host() const { return bpb_seen_; }
+
   double bpm() const { return bpm_; }
   int bpb() const { return bpb_; }
   bool rolling() const { return rolling_; }
@@ -65,6 +80,7 @@ class TempoClock {
   double sr_ = 48000.0;
   double bpm_ = 120.0;
   int bpb_ = 4;
+  bool bpb_seen_ = false;  // Zynthian прислал размер такта
   bool rolling_ = false;
   uint32_t messages_ = 0;
   double beats_ = 0.0;

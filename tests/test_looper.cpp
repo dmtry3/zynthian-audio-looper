@@ -787,6 +787,48 @@ static void test_parts_lock() {
   s.wav("parts_lock");
 }
 
+// Компенсация задержки 10 мс: вход опаздывает на 480 кадров. Сыгранное на 2-ю долю ложится
+// в цикле на 2-ю долю (основа с черты такта), овердаб на 3-ю долю — на 3-ю.
+static void test_latency() {
+  const uint64_t BAR = 96000, LAT = 480;
+  Sim s(64, true);
+  s.ti.rolling = true;
+  s.set.length[0] = 1;
+  s.set.latency_ms = 10.0f;
+  s.apply();
+  // музыкант играет короткий удар на доле beat (кадр внутри такта); в плагин приходит позже на LAT
+  auto hit_at = [&](uint64_t beat) {
+    return [beat, BAR, LAT](uint64_t t) {
+      if (t < LAT) return 0.0f;
+      const uint64_t x = (t - LAT) % BAR;
+      return x >= beat && x < beat + 48 ? 0.5f : 0.0f;
+    };
+  };
+  auto onset = [&](uint64_t from, uint64_t to) {
+    for (uint64_t i = from; i < to; ++i)
+      if (std::fabs(s.out_l[i]) > 0.05f) return (int64_t)(i - from);
+    return (int64_t)-1;
+  };
+  s.in_l = hit_at(24000);
+  s.run(BLOCK);
+  s.cmd(Cmd::Rec);           // ждёт черты такта 1, запись с 1-го такта + LAT
+  s.run(2 * BAR + 2000 - s.t);  // цикл закрылся сам (длина 1 такт)
+  s.in_l = [](uint64_t) { return 0.0f; };
+  CHECK(s.v(0).state == 3);
+  s.run(3 * BAR + 1000 - s.t);
+  CHECK(onset(2 * BAR + 3000, 3 * BAR) == 24000 - 3000);  // удар звучит ровно на 2-й доле
+  // овердаб: удар на 3-ю долю
+  s.cmd(Cmd::Rec);
+  s.in_l = hit_at(48000);
+  s.run(3 * BAR + 90000 - s.t);
+  s.cmd(Cmd::Rec);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(5 * BAR - s.t);
+  CHECK(onset(4 * BAR + 3000, 5 * BAR) == 24000 - 3000);
+  CHECK(onset(4 * BAR + 30000, 5 * BAR) == 48000 - 30000);
+  CHECK(s.max_step(2 * BAR + 2000, 3 * BAR) < 0.6f);
+}
+
 // Сетка 6×6 и 2×2: дорожки и парты по кругу в пределах сетки, Lock в пустой парт;
 // смена сетки стирает лупы плавно и освобождает память, микшер и скорости не трогает.
 static void test_grid() {
@@ -1294,6 +1336,7 @@ int main() {
   test_peaks();
   test_rec_peaks();
   test_rop_leave();
+  test_latency();
   test_grid();
   test_parts_lock();
   test_parts_edges();

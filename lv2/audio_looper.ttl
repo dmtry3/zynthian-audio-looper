@@ -192,7 +192,11 @@
         <urn:audiolooper:looper#spd34> ,
         <urn:audiolooper:looper#spd35> ,
         <urn:audiolooper:looper#spd36> ,
-        <urn:audiolooper:looper#sreset> ;
+        <urn:audiolooper:looper#sreset> ,
+        <urn:audiolooper:looper#bpb> ,
+        <urn:audiolooper:looper#hold_ms> ,
+        <urn:audiolooper:looper#reset_ms> ,
+        <urn:audiolooper:looper#latency> ;
     lv2:port
     [
         a lv2:InputPort , lv2:AudioPort ; lv2:index 18 ; lv2:symbol "in_l" ; lv2:name "In L" ;
@@ -2047,3 +2051,39 @@
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
+# Этап 6: долей в такте (запасной), пороги жестов, компенсация задержки (мс).
+<urn:audiolooper:looper#bpb>
+    a lv2:Parameter ;
+    lv2:symbol "bpb" ;
+    rdfs:label "Beats Per Bar" ;
+    rdfs:range atom:Int ;
+    lv2:default 4 ; lv2:minimum 1 ; lv2:maximum 16 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#hold_ms>
+    a lv2:Parameter ;
+    lv2:symbol "hold_ms" ;
+    rdfs:label "Hold Time" ;
+    rdfs:range atom:Int ;
+    lv2:default 500 ; lv2:minimum 200 ; lv2:maximum 2000 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#reset_ms>
+    a lv2:Parameter ;
+    lv2:symbol "reset_ms" ;
+    rdfs:label "Reset Hold Time" ;
+    rdfs:range atom:Int ;
+    lv2:default 1000 ; lv2:minimum 500 ; lv2:maximum 3000 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#latency>
+    a lv2:Parameter ;
+    lv2:symbol "latency" ;
+    rdfs:label "Latency Comp" ;
+    rdfs:range atom:Int ;
+    lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .

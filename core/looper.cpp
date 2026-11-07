@@ -136,6 +136,7 @@ void Looper::rec_press(int ti) {
         start_rec(ti);
       } else {
         t.st = TState::Armed;
+        t.rec_wait = 0;
       }
       break;
     case TState::Armed: t.st = TState::Empty; break;
@@ -165,6 +166,7 @@ void Looper::start_rec(int ti) {
   t.rec_frames = 0;
   t.rec_target = 0;
   t.rec_no_dub = false;
+  t.rec_lat = 0;
   const int len_bars = set_.length[ti % ns_];  // длина задаётся по месту дорожки в парте
   if (set_.quantize && len_bars > 0) t.rec_target = (uint64_t)std::llround(len_bars * (double)bar_frames());
   // Quantize: запись начинается на черте такта, запоминаем её долю для подстройки фазы
@@ -222,6 +224,19 @@ void Looper::rec_peaks(int ti, float l, float r) {
   pk.rec.mx[n] = peak_q(mx);
   __atomic_store_n(&pk.rec_cols, n + 1, __ATOMIC_RELEASE);
   t.plive = true;
+}
+
+// Запись с черты (Quantize). Вход приходит в плагин позже, чем музыкант его сыграл, на задержку
+// аудиоинтерфейса: запись начинается на столько же позже — и сыгранное «на раз» ляжет на начало цикла.
+void Looper::rec_on_boundary(int ti) {
+  Track& t = tr_[ti];
+  if (set_.quantize && lat_ > 0) {
+    t.st = TState::Armed;
+    t.rec_wait = lat_;
+    rec_waiting_ = true;
+  } else {
+    start_rec(ti);
+  }
 }
 
 void Looper::cancel_rec(int ti) {
@@ -288,7 +303,9 @@ void Looper::close_loop(int ti, uint64_t L) {
     if (t.st == TState::Dub && t.layer >= 0) dub_write(ti, k, l, r);
   }
   pool_.set_len(base, L);
-  t.pos = (double)d;
+  // запись начата позже черты на компенсацию задержки: позиция на столько же дальше (в фазе с сеткой)
+  t.pos = (double)((d + t.rec_lat) % L);
+  t.rec_lat = 0;
   // Дорожка начинает звучать: короткий fade in, иначе вход хвоста на полной громкости щёлкнет.
   if (t.xf_from >= 0 && t.xf_owned) pool_.free_buf(t.xf_from);
   t.xf_from = -1;
@@ -879,9 +896,19 @@ void Looper::dub_write(int ti, uint64_t p, float l, float r) {
 
 // Овердаб на скорости не 1× (как на ленте): головка прошла от прошлой позиции до текущей,
 // в каждую пройденную позицию лупа пишем вход, интерполированный между прошлым и текущим кадром.
+// Куда в цикле пишется вход овердаба: он опоздал на задержку аудиоинтерфейса, а музыкант играл
+// под то, что слышал, — на lat_ кадров раньше, это lat_ × шаг головки назад по циклу.
+double Looper::dub_pos(const Track& t, double step) const {
+  if (!lat_ || !t.len) return t.pos;
+  const double L = (double)t.len;
+  double w = std::fmod(t.pos - (double)lat_ * step, L);
+  if (w < 0.0) w += L;
+  return w;
+}
+
 void Looper::dub_resampled(int ti, float il, float ir, double step) {
   Track& t = tr_[ti];
-  const double w1 = t.pos;
+  const double w1 = dub_pos(t, step);
   if (step == 1.0 && w1 == std::floor(w1)) {  // ровно 1×: как раньше, кадр в кадр
     dub_write(ti, wrap_index((int64_t)w1, t.len), il, ir);
     return;
@@ -936,7 +963,7 @@ void Looper::live_peaks(int ti, uint64_t p) {
 void Looper::on_grid(bool beat, bool bar) {
   for (int ti = 0; ti < kTracks; ++ti) {
     Track& t = tr_[ti];
-    if (t.st == TState::Armed && bar) start_rec(ti);
+    if (t.st == TState::Armed && bar && t.rec_wait == 0) rec_on_boundary(ti);
     if (t.mute_pending && ((set_.mute_q == 1 && beat) || (set_.mute_q == 2 && bar))) apply_mute(ti);
     if (t.phase_wait && ((set_.mute_q == 1 && beat) || (set_.mute_q >= 2 && bar))) {
       t.phase_wait = false;
@@ -1376,7 +1403,7 @@ void Looper::switch_part(int p) {
     rec_after_switch_ = false;
     const int k = idx(active_);
     Track& t = tr_[k];
-    if (t.st == TState::Empty) start_rec(k);
+    if (t.st == TState::Empty) rec_on_boundary(k);
     else if (t.st == TState::Play && !t.stopped && !t.ustop) start_dub(k);
   }
 }
@@ -1423,6 +1450,7 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
   const float dgs = n ? (dry_g_ - dg0) / (float)n : 0.0f;
   const float lim_rel = (float)std::exp(-1.0 / (kLimRelS * sr_));
   update_speeds(n);
+  lat_ = (uint32_t)std::lround(std::fmin(100.0f, std::fmax(0.0f, set_.latency_ms)) * sr_ / 1000.0);
   float mbl = 0.0f, mbr = 0.0f;
   // «конец цикла» для смены парта — по самой длинной играющей дорожке текущего парта
   master_ = -1;
@@ -1436,6 +1464,23 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
   }
   if (pend_part_ >= 0 && set_.part_q == 3 && master_ < 0) part_due_ = true;  // нечему доигрывать
   for (uint32_t i = 0; i < n; ++i) {
+    // компенсация задержки: запись начинается ровно через lat_ кадров после черты
+    // (до проверки черты: взведённая в этом кадре дорожка начинает отсчёт со следующего)
+    if (rec_waiting_) {
+      rec_waiting_ = false;
+      for (int k = 0; k < kTracks; ++k) {
+        Track& t = tr_[k];
+        if (!t.rec_wait) continue;
+        if (t.st != TState::Armed) {
+          t.rec_wait = 0;
+        } else if (--t.rec_wait == 0) {
+          start_rec(k);
+          t.rec_lat = lat_;
+        } else {
+          rec_waiting_ = true;
+        }
+      }
+    }
     // beats_ — доля этого кадра; граница там, где доля перешла через целое с прошлого кадра
     if (set_.quantize) {
       const int64_t a = (int64_t)std::floor(beats_ - bpf_), c = (int64_t)std::floor(beats_);

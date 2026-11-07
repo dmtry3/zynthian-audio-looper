@@ -81,27 +81,27 @@ enum Action : int {
   A_TRK_NEXT, A_TRK_PREV, A_PART_NEXT, A_PART_PREV, A_PLAY, A_W_LOOP, A_W_MIXER
 };
 
-// Какое действие даёт тап и какое удержание. hold_ms = 0: срабатывает сразу по нажатию.
+// Какое действие даёт тап и какое удержание. Без удержания (A_NONE): срабатывает сразу по нажатию.
+// Пороги удержания — настройки hold_ms (общий) и reset_ms (Reset).
 // С удержанием тап срабатывает при отпускании, иначе их не различить.
 struct ButtonDef {
   Action tap, hold;
-  double hold_ms;
 };
 const ButtonDef kDefs[kButtons] = {
-    {A_REC, A_NONE, 0},
-    {A_UNDO, A_REDO, 500},
-    {A_REDO, A_NONE, 0},
-    {A_RESET_TRACK, A_RESET_ALL, 1000},
-    {A_MUTE, A_NONE, 0},
-    {A_REVERSE, A_NONE, 0},
-    {A_LOCK, A_NONE, 0},
-    {A_TRK_NEXT, A_TRK_PREV, 500},
-    {A_TRK_PREV, A_NONE, 0},
-    {A_PART_NEXT, A_PART_PREV, 500},
-    {A_PART_PREV, A_NONE, 0},
-    {A_PLAY, A_NONE, 0},
-    {A_W_LOOP, A_NONE, 0},
-    {A_W_MIXER, A_NONE, 0},
+    {A_REC, A_NONE},
+    {A_UNDO, A_REDO},
+    {A_REDO, A_NONE},
+    {A_RESET_TRACK, A_RESET_ALL},
+    {A_MUTE, A_NONE},
+    {A_REVERSE, A_NONE},
+    {A_LOCK, A_NONE},
+    {A_TRK_NEXT, A_TRK_PREV},
+    {A_TRK_PREV, A_NONE},
+    {A_PART_NEXT, A_PART_PREV},
+    {A_PART_PREV, A_NONE},
+    {A_PLAY, A_NONE},
+    {A_W_LOOP, A_NONE},
+    {A_W_MIXER, A_NONE},
 };
 
 // Настройки и микшер: LV2-параметры (patch:Set), сохраняются в снапшотах. Порядок как в audio_looper.ttl.
@@ -122,6 +122,10 @@ enum Param {
   PR_SGLIDE,                    // плавный ход скорости, мс
   PR_SPD0,                      // spd1..spd36: ручная скорость дорожки
   PR_SRESET = PR_SPD0 + kTracks,  // команда виджета: сброс скорости дорожки 1..6 текущего парта
+  PR_BPB,                       // долей в такте, пока Zynthian не прислал свой размер
+  PR_HOLD,                      // порог удержания педали, мс
+  PR_RHOLD,                     // порог удержания Reset, мс
+  PR_LAT,                       // компенсация задержки, мс
   PR_COUNT
 };
 struct ParamDef {
@@ -161,6 +165,10 @@ void init_params() {
     std::snprintf(kParams[PR_SPD0 + t].sym, 16, "spd%d", t + 1);
   }
   kParams[PR_SRESET] = ParamDef{"sreset", 0.0f, 0.0f, 6.0f, false};
+  kParams[PR_BPB] = ParamDef{"bpb", 4.0f, 1.0f, 16.0f, false};
+  kParams[PR_HOLD] = ParamDef{"hold_ms", 500.0f, 200.0f, 2000.0f, false};
+  kParams[PR_RHOLD] = ParamDef{"reset_ms", 1000.0f, 500.0f, 3000.0f, false};
+  kParams[PR_LAT] = ParamDef{"latency", 0.0f, 0.0f, 100.0f, false};
 }
 constexpr uint32_t kReportPerRun = 4;  // ответов на patch:Get за один run()
 
@@ -220,16 +228,26 @@ struct Plugin {
     s.tempo_glide_ms = vals[PR_TGLIDE];
     s.spd_snap = (int)vals[PR_SSNAP];
     s.spd_glide_ms = vals[PR_SGLIDE];
+    s.latency_ms = vals[PR_LAT];
     looper->set_settings(s);
+    clock.set_default_bpb((int)vals[PR_BPB]);
+    configure_buttons();
     looper->set_grid(grid_n(vals[PR_GRID]));  // та же сетка — ничего не делает
+  }
+  // Пороги удержания из настроек: Reset — свой, остальные кнопки с удержанием — общий.
+  void configure_buttons() {
+    for (uint32_t i = 0; i < kButtons; ++i) {
+      const ButtonDef& d = kDefs[i];
+      const double ms = d.hold == A_NONE ? 0.0 : (d.tap == A_RESET_TRACK ? vals[PR_RHOLD] : vals[PR_HOLD]);
+      buttons[i].configure(ms > 0, (uint32_t)(ms * sr / 1000.0));
+    }
   }
   // Пользователь сменил сетку: номера дорожек теперь значат другое — микшер и скорости по умолчанию
   // (при загрузке снапшота так не делаем: его микшер относится к его сетке).
   void reset_track_params() {
     for (int i = PR_LEV0; i < PR_COUNT; ++i) {
-      if (i == PR_DRY || i == PR_MASTER || i == PR_LIMIT || i == PR_TMUTE || i == PR_SRESET || i == PR_TGLIDE ||
-          i == PR_SSNAP || i == PR_SGLIDE)
-        continue;  // общие, не по номеру дорожки
+      const bool per_track = i < PR_DRY || (i >= PR_SPD0 && i < PR_SPD0 + kTracks);
+      if (!per_track) continue;  // Dry, Master, ограничитель, настройки — общие
       if (vals[i] != kParams[i].def) {
         vals[i] = kParams[i].def;
         dirty[i] = true;
@@ -257,7 +275,9 @@ struct Plugin {
       looper->set_speed(i - PR_SPD0, vals[i]);
     }
   }
-  static bool is_setting(int i) { return i < PR_LEV0 || i == PR_TGLIDE || i == PR_SSNAP || i == PR_SGLIDE; }
+  static bool is_setting(int i) {
+    return i < PR_LEV0 || i == PR_TGLIDE || i == PR_SSNAP || i == PR_SGLIDE || (i >= PR_BPB && i <= PR_LAT);
+  }
   void apply_all() {
     apply_settings();
     for (int i = PR_LEV0; i < PR_COUNT; ++i) apply_mix_param(i);
@@ -561,10 +581,7 @@ LV2_Handle instantiate(const LV2_Descriptor*, double rate, const char*, const LV
 
   pl->clock.set_sample_rate(rate);
   pl->midi_clock.set_sample_rate(rate);
-  for (uint32_t i = 0; i < kButtons; ++i) {
-    const ButtonDef& d = kDefs[i];
-    pl->buttons[i].configure(d.hold_ms > 0, (uint32_t)(d.hold_ms * rate / 1000.0));
-  }
+  pl->apply_settings();  // пороги жестов и долей в такте — с известной частотой
   return pl;
 }
 

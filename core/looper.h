@@ -34,6 +34,7 @@ struct Settings {
   float tempo_glide_ms = 500.0f;  // плавная смена темпа (следование темпу)
   int spd_snap = 0;               // привязка ручной скорости: 0 свободно, 1 полутоны, 2 октавы
   float spd_glide_ms = 150.0f;    // плавный ход ручной скорости
+  float latency_ms = 0.0f;        // компенсация задержки аудиоинтерфейса (выход + вход), 0..100
 };
 
 constexpr float kMinSpeed = 0.25f, kMaxSpeed = 2.0f;  // ручная скорость дорожки, как у ленты
@@ -195,7 +196,10 @@ class Looper {
     // запись основы
     int32_t rec = -1;
     uint64_t rec_frames = 0, rec_target = 0;
-    bool rec_no_dub = false;  // ROP: ушли на другую дорожку во время записи — после закрытия цикла без овердаба
+    bool rec_no_dub = false;
+    // компенсация задержки: запись с черты начинается на столько кадров позже (вход опаздывает)
+    uint32_t rec_wait = 0;    // Armed: кадров до начала записи после черты
+    uint32_t rec_lat = 0;     // запись начата с задержкой: на столько позиция после закрытия цикла дальше  // ROP: ушли на другую дорожку во время записи — после закрытия цикла без овердаба
     // волна записи: кадров в колонке, кадров в текущей колонке, её минимум и максимум
     uint64_t rpk_step = 0, rpk_n = 0;
     float rpk_mn = 0.0f, rpk_mx = 0.0f;
@@ -230,6 +234,7 @@ class Looper {
   void reset_all_now(bool full = true);  // full: и микшер со скоростями
   void apply_grid();
   void start_rec(int ti);
+  void rec_on_boundary(int ti);  // запись с черты (такт, переход парта) с учётом компенсации задержки
   void cancel_rec(int ti);
   void close_loop(int ti, uint64_t L);
   void request_close(int ti);
@@ -281,6 +286,7 @@ class Looper {
   float dub_env(Track& t);
   bool dub_put(int ti, uint64_t p, float l, float r);
   void dub_resampled(int ti, float il, float ir, double step);
+  double dub_pos(const Track& t, double step) const;
   void update_speeds(uint32_t n);
   float snap_speed(float s) const;
   void on_grid(bool beat, bool bar);
@@ -294,6 +300,8 @@ class Looper {
   Track tr_[kTracks];
   int active_ = 0;
   int ns_ = 4;              // сетка: партов и дорожек в парте
+  uint32_t lat_ = 0;        // компенсация задержки, кадров (из настройки, на этот блок)
+  bool rec_waiting_ = false;  // какая-то дорожка ждёт начала записи после черты
   int grid_pending_ = -1;   // смена сетки ждёт конца задания рабочего потока
   // сетка
   double beats_ = 0.0, bpf_ = 0.0;  // сетка: при стоящем транспорте лупер считает сам

@@ -84,6 +84,31 @@ int main() {
     CHECK(pl.vals[PR_TMUTE] == 6.0f);
     on_param(&pl, PR_TMUTE);
     CHECK(pl.vals[PR_TMUTE] == 0.0f);
+    // настройки этапа 6: долей в такте, задержка, пороги жестов
+    set_param(&pl, PR_BPB, 3);
+    on_param(&pl, PR_BPB);
+    set_param(&pl, PR_LAT, 25);
+    on_param(&pl, PR_LAT);
+    CHECK(pl.clock.bpb() == 3 && pl.looper->settings().latency_ms == 25.0f);
+    set_param(&pl, PR_LAT, 500);  // за пределом — до 100
+    CHECK(pl.vals[PR_LAT] == 100.0f);
+    set_param(&pl, PR_HOLD, 300);
+    on_param(&pl, PR_HOLD);
+    auto hold_after = [&](uint32_t b, uint32_t blocks) {  // удержание кнопки b: через сколько блоков Hold
+      Button& btn = pl.buttons[b];
+      btn.process(0.0f, 128);
+      btn.process(0.0f, 128);
+      for (uint32_t k = 1; k <= blocks; ++k)
+        if (btn.process(1.0f, 128) == Gesture::Hold) return k;
+      return 0u;
+    };
+    const uint32_t undo_b = P_UNDO - P_REC, reset_b = P_RESET - P_REC;
+    CHECK(hold_after(undo_b, 1000) == 114);   // 300 мс = 112,5 блока по 128 (+ блок нажатия)
+    CHECK(hold_after(reset_b, 1000) == 376);  // Reset — свой порог, 1 с
+    set_param(&pl, PR_RHOLD, 2000);
+    on_param(&pl, PR_RHOLD);
+    pl.buttons[reset_b].process(0.0f, 128);
+    CHECK(hold_after(reset_b, 1000) == 751);
     delete pl.looper;
   }
   std::printf("plugin: %d passed, %d failed\n", g_pass, g_fail);

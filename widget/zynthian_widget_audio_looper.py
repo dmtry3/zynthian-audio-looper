@@ -132,6 +132,9 @@ def _len(v):
 
 
 QUANT_NAMES = ("NOW", "BEAT", "BAR", "LOOP END")
+LAT_STEPS = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100]
+HOLD_STEPS = [200, 300, 400, 500, 600, 750, 1000, 1250, 1500, 2000]
+RHOLD_STEPS = [500, 750, 1000, 1250, 1500, 2000, 2500, 3000]
 # Экран настроек: разделы, в разделе строки.
 #   ("seg", символ, подпись, названия вариантов) — сегментный переключатель, значение = номер варианта
 #   ("sl", символ, подпись, список значений, как показать) — ползунок по шагам списка
@@ -144,10 +147,12 @@ SETTINGS = [
     ("RECORDING", [
         ("seg", "rec_order", "REC ORDER", ("RPO", "ROP")),
         ("seg", "mode", "MODE", ("FREE", "QUANTIZE")),
+        ("sl", "latency", "LATENCY", LAT_STEPS, lambda v: "OFF" if v == 0 else "%d ms" % v),
     ]),
     ("QUANTIZE", [
         ("seg", "mute_q", "MUTE AT", QUANT_NAMES),
         ("seg", "part_q", "PART AT", QUANT_NAMES),
+        ("sl", "bpb", "BEATS / BAR", list(range(1, 17)), lambda v: "%d" % v),
     ]),
     ("FADES", [
         ("sl", "fade_out", "FADE OUT", FADE_STEPS, _ms),
@@ -162,6 +167,10 @@ SETTINGS = [
     ("TRACK LENGTH", [
         ("sl", "len%d" % k, "TRACK %d" % k, list(range(17)), _len) for k in range(1, 7)
     ]),
+    ("FOOTSWITCH", [
+        ("sl", "hold_ms", "HOLD", HOLD_STEPS, _ms),
+        ("sl", "reset_ms", "RESET HOLD", RHOLD_STEPS, _ms),
+    ]),
     ("OUTPUT", [
         ("seg", "limiter", "LIMITER", ("OFF", "ON")),
     ]),
@@ -169,7 +178,8 @@ SETTINGS = [
 SCROLL_START_PX = 8     # палец ушёл по вертикали дальше — это прокрутка, а не касание
 SETTING_DEFAULTS = {"rec_order": 0, "mode": 1, "mute_q": 2, "part_q": 3, "tempo_glide": 500, "spd_snap": 0,
                     "spd_glide": 150, "fade_out": 200, "fade_in": 200, "rev_time": 50,
-                    "len1": 0, "len2": 0, "len3": 0, "len4": 0, "len5": 0, "len6": 0, "limiter": 1, "grid": 1}
+                    "len1": 0, "len2": 0, "len3": 0, "len4": 0, "len5": 0, "len6": 0, "limiter": 1, "grid": 1,
+                    "latency": 0, "bpb": 4, "hold_ms": 500, "reset_ms": 1000}
 
 
 def mix(c1, c2, f):
