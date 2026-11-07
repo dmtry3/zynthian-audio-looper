@@ -1,4 +1,4 @@
-// Звуковое ядро лупера: 4 парта по 4 стерео-дорожки, запись, овердабы, undo/redo по слою,
+// Звуковое ядро лупера: сетка 2×2, 4×4 или 6×6 партов и стерео-дорожек, запись, овердабы, undo/redo по слою,
 // mute, reverse как лента, Free и Quantize, длина дорожки, RPO и ROP, Reset, парты и Lock.
 // Без LV2. process() и всё с пометкой RT вызываются из аудиопотока: без выделения памяти,
 // блокировок и системных вызовов. do_work() — из рабочего потока (LV2 worker).
@@ -10,9 +10,11 @@
 
 namespace alp {
 
-constexpr int kSlots = 4;                 // дорожек в парте
-constexpr int kParts = 4;
-constexpr int kTracks = kSlots * kParts;  // дорожка k принадлежит парту k / kSlots
+// Сетка: n партов по n дорожек, n = 2, 4 или 6 (меняется во время работы, по умолчанию 4).
+// Память — под самую большую сетку. Дорожка k принадлежит парту k / n, место в парте k % n.
+constexpr int kMaxSlots = 6;
+constexpr int kTracks = kMaxSlots * kMaxSlots;
+inline bool valid_grid(int n) { return n == 2 || n == 4 || n == 6; }
 constexpr uint32_t kMaxUndo = 1024;  // записей undo на дорожку (дальше старые вливаются в основу)
 
 enum class Cmd : uint8_t {
@@ -23,7 +25,7 @@ enum class Cmd : uint8_t {
 struct Settings {
   bool rop = false;           // false: RPO, true: ROP
   bool quantize = true;       // false: Free
-  int length[kSlots] = {0, 0, 0, 0};  // тактов, 0 = Free (по месту дорожки в парте)
+  int length[kMaxSlots] = {0, 0, 0, 0, 0, 0};  // тактов, 0 = Free (по месту дорожки в парте)
   float fade_out_ms = 200.0f;  // mute
   float fade_in_ms = 200.0f;   // unmute
   float reverse_ms = 50.0f;    // время разворота
@@ -73,6 +75,7 @@ struct WorkMsg {
   uint8_t op;  // 1 вычесть слой (undo), 2 прибавить (redo), 3 пики
   uint8_t track;
   uint8_t nl;  // op 3: слоёв в lay[]
+  uint8_t slot;  // op 3: место дорожки в парте (куда в общей памяти писать пики)
   int32_t src, layer, dst;
   uint64_t len;
   uint32_t gen;
@@ -108,9 +111,15 @@ class Looper {
   // рабочий поток
   void do_work(const WorkMsg& m, WorkResp& r);
 
+  // RT: сетка n×n. Смена стирает все лупы (как удержание Reset, без отката);
+  // микшер и ручные скорости не трогает — их сбрасывает обёртка, когда сетку сменил пользователь.
+  void set_grid(int n);
+  int grid() const { return ns_; }
+  bool grid_pending() const { return grid_pending_ > 0; }
+
   // RT: состояние (view и active — по месту дорожки в текущем парте)
   int active() const { return active_; }
-  int active_index() const { return idx(active_); }  // номер активной дорожки среди всех 16
+  int active_index() const { return idx(active_); }  // номер активной дорожки среди всех (парт × n + место)
   int part() const { return cur_part_; }
   int pending_part() const { return pend_part_; }
   bool rec_after_switch() const { return rec_after_switch_; }
@@ -119,11 +128,11 @@ class Looper {
   int playstop_pending() const { return ps_pending_; }
   double grid_beats() const { return beats_; }  // доли по сетке лупера (при стоящем транспорте — от первой записи)
   TrackView view(int i) const;
-  // микшер (RT): k — дорожка 0..15; mix_epoch растёт, когда ядро меняет микшер само
+  // микшер (RT): k — дорожка 0..n×n−1; mix_epoch растёт, когда ядро меняет микшер само
   // (сброс удержанием Reset, Lock-копия) — обёртка сообщает новые значения хосту
   void set_mix(int k, const Mix& m) { mix_[k] = m; }
   void mute_slot(int slot);  // mute дорожки текущего парта (кнопка M в виджете Mixer)
-  // ручная скорость дорожки k (0..15): цель, к ней плавный ход; сброс — к 1× и в фазу с тактом
+  // ручная скорость дорожки k (0..n×n−1): цель, к ней плавный ход; сброс — к 1× и в фазу с тактом
   void set_speed(int k, float s) { tr_[k].mspd = s < kMinSpeed ? kMinSpeed : (s > kMaxSpeed ? kMaxSpeed : s); }
   float speed(int k) const { return tr_[k].mspd; }
   void speed_reset(int k);
@@ -217,7 +226,8 @@ class Looper {
   void undo(int ti);
   void redo(int ti);
   void reset_track(int ti);
-  void reset_all_now();
+  void reset_all_now(bool full = true);  // full: и микшер со скоростями
+  void apply_grid();
   void start_rec(int ti);
   void cancel_rec(int ti);
   void close_loop(int ti, uint64_t L);
@@ -241,8 +251,9 @@ class Looper {
   void apply_playstop(bool stop);
   void leave_track(int ti);
   // парты
-  int idx(int slot) const { return cur_part_ * kSlots + slot; }
-  bool in_cur(int k) const { return k / kSlots == cur_part_; }
+  int idx(int slot) const { return cur_part_ * ns_ + slot; }
+  bool in_cur(int k) const { return k / ns_ == cur_part_; }
+  int slot_of(int k) const { return k % ns_; }
   bool part_has_content(int p) const;
   void switch_part(int p);
   void clone_into(int from, int to);
@@ -281,6 +292,8 @@ class Looper {
   uint32_t xf_ = 480;          // внутренний кроссфейд стыка, овердаба, undo (10 мс)
   Track tr_[kTracks];
   int active_ = 0;
+  int ns_ = 4;              // сетка: партов и дорожек в парте
+  int grid_pending_ = -1;   // смена сетки ждёт конца задания рабочего потока
   // сетка
   double beats_ = 0.0, bpf_ = 0.0;  // сетка: при стоящем транспорте лупер считает сам
   int bpb_ = 4;

@@ -1,4 +1,4 @@
-// Тесты LV2-обёртки без хоста: ручки страницы 5 с захватом (catch).
+// Тесты LV2-обёртки без хоста: ручки страницы 5 с захватом (catch), смена сетки.
 #include <cstdio>
 #include <initializer_list>
 
@@ -44,6 +44,48 @@ int main() {
   CHECK(pos_to_db(75.0f + step) - pos_to_db(75.0f) < 0.25f);
   for (float db : {-40.0f, -12.0f, -3.0f, -0.5f, 0.0f, 3.0f})
     CHECK(std::fabs(pos_to_db(db_to_pos(db)) - db) < 1e-3f);
+  // смена сетки пользователем: ядро в 6×6, микшер и скорости дорожек по умолчанию, Dry остаётся
+  {
+    init_params();
+    Plugin pl;
+    pl.looper = new Looper();
+    pl.looper->init(48000.0, (size_t)64 << 20);
+    for (int i = 0; i < PR_COUNT; ++i) pl.vals[i] = kParams[i].def;
+    pl.apply_all();
+    CHECK(pl.looper->grid() == 4);
+    set_param(&pl, PR_LEV0 + 5, -12.0);
+    on_param(&pl, PR_LEV0 + 5);
+    set_param(&pl, PR_SPD0 + 2, 0.5);
+    on_param(&pl, PR_SPD0 + 2);
+    set_param(&pl, PR_DRY, -6.0);
+    on_param(&pl, PR_DRY);
+    CHECK(pl.looper->mix(5).level_db == -12.0f && pl.looper->speed(2) == 0.5f);
+    set_param(&pl, PR_GRID, 2);
+    on_param(&pl, PR_GRID);
+    CHECK(pl.looper->grid() == 6);
+    CHECK(pl.vals[PR_LEV0 + 5] == 0.0f && pl.looper->mix(5).level_db == 0.0f && pl.dirty[PR_LEV0 + 5]);
+    CHECK(pl.vals[PR_SPD0 + 2] == 1.0f && pl.looper->speed(2) == 1.0f);
+    CHECK(pl.vals[PR_DRY] == -6.0f && pl.looper->dry_db() == -6.0f);
+    // повторно та же сетка — микшер не трогается
+    set_param(&pl, PR_LEV0 + 30, -3.0);
+    on_param(&pl, PR_LEV0 + 30);
+    set_param(&pl, PR_GRID, 2);
+    on_param(&pl, PR_GRID);
+    CHECK(pl.looper->mix(30).level_db == -3.0f);
+    // снапшот (restore -> apply_all) с другой сеткой: сетка меняется, его микшер остаётся
+    pl.vals[PR_GRID] = 0;
+    pl.vals[PR_LEV0 + 1] = -9.0f;
+    pl.apply_all();
+    CHECK(pl.looper->grid() == 2 && pl.looper->mix(1).level_db == -9.0f);
+    // команды виджета для дорожек 5 и 6 в 6×6
+    pl.vals[PR_GRID] = 2;
+    pl.apply_all();
+    set_param(&pl, PR_TMUTE, 6);
+    CHECK(pl.vals[PR_TMUTE] == 6.0f);
+    on_param(&pl, PR_TMUTE);
+    CHECK(pl.vals[PR_TMUTE] == 0.0f);
+    delete pl.looper;
+  }
   std::printf("plugin: %d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }

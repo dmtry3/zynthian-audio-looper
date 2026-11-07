@@ -13,7 +13,7 @@ namespace alp {
 
 constexpr uint32_t kPeakCols = 512;
 constexpr uint32_t kPeakLayers = 8;            // последние слои овердабов, видимые отдельно
-constexpr uint32_t kPeakMagic = 0x32504C41u;   // "ALP2": с волной записи
+constexpr uint32_t kPeakMagic = 0x33504C41u;   // "ALP3": 6 дорожек, с волной записи
 
 struct PeakWave {
   int8_t mn[kPeakCols];
@@ -36,7 +36,7 @@ struct PeakTrack {
 
 struct PeakShm {
   uint32_t magic, ncols, ntracks, nlayers;
-  PeakTrack t[4];
+  PeakTrack t[6];                    // по месту в парте (сетка до 6×6)
 };
 
 static_assert(sizeof(PeakTrack) == 24 + 4 * kPeakLayers + 2 * kPeakCols * (3 + kPeakLayers), "раскладка для виджета");

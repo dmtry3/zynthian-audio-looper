@@ -56,8 +56,22 @@ enum Port : uint32_t {
   O_FLAGS, O_POOL, O_PARTS,
   O_PK1, O_PK2, O_PK3, O_PK4, O_MPK_L, O_MPK_R,
   O_SPD1, O_SPD2, O_SPD3, O_SPD4, O_ESPD1, O_ESPD2, O_ESPD3, O_ESPD4,
+  // сетка до 6×6 (этап 7): дорожки 5 и 6, флаги дорожек масками, сама сетка
+  O_ST5, O_ST6, O_POS5, O_POS6, O_LEN5, O_LEN6, O_PK5, O_PK6, O_SPD5, O_SPD6, O_ESPD5, O_ESPD6,
+  O_MUTES, O_REVS, O_STOPS, O_LOCKS, O_GRID,
   P_COUNT
 };
+
+// Выходы по месту дорожки в парте 1..6
+const uint32_t kOutSt[kMaxSlots] = {O_ST1, O_ST2, O_ST3, O_ST4, O_ST5, O_ST6};
+const uint32_t kOutPos[kMaxSlots] = {O_POS1, O_POS2, O_POS3, O_POS4, O_POS5, O_POS6};
+const uint32_t kOutLen[kMaxSlots] = {O_LEN1, O_LEN2, O_LEN3, O_LEN4, O_LEN5, O_LEN6};
+const uint32_t kOutPk[kMaxSlots] = {O_PK1, O_PK2, O_PK3, O_PK4, O_PK5, O_PK6};
+const uint32_t kOutSpd[kMaxSlots] = {O_SPD1, O_SPD2, O_SPD3, O_SPD4, O_SPD5, O_SPD6};
+const uint32_t kOutEspd[kMaxSlots] = {O_ESPD1, O_ESPD2, O_ESPD3, O_ESPD4, O_ESPD5, O_ESPD6};
+
+// Параметр grid: 0 — 2×2, 1 — 4×4, 2 — 6×6
+inline int grid_n(float v) { return v < 0.5f ? 2 : (v < 1.5f ? 4 : 6); }
 
 constexpr uint32_t kButtons = P_W_MIXER - P_REC + 1;
 
@@ -92,19 +106,22 @@ const ButtonDef kDefs[kButtons] = {
 
 // Настройки и микшер: LV2-параметры (patch:Set), сохраняются в снапшотах. Порядок как в audio_looper.ttl.
 enum Param {
-  PR_REC_ORDER, PR_MODE, PR_LEN1, PR_LEN2, PR_LEN3, PR_LEN4, PR_FADE_OUT, PR_FADE_IN, PR_REV, PR_MUTE_Q, PR_PART_Q,
-  PR_LEV0,                      // lev1..lev16: уровень дорожки, дБ
-  PR_PAN0 = PR_LEV0 + kTracks,  // pan1..pan16: −100..100
-  PR_CHM0 = PR_PAN0 + kTracks,  // chm1..chm16: 0 стерео, 1 только L, 2 только R
+  PR_GRID,  // первым: при загрузке снапшота сетка ставится раньше микшера
+  PR_REC_ORDER, PR_MODE, PR_LEN1, PR_LEN6 = PR_LEN1 + kMaxSlots - 1, PR_FADE_OUT, PR_FADE_IN, PR_REV, PR_MUTE_Q,
+  PR_PART_Q,
+  // дорожка k = парт × n + место (n — сетка), всего до 36
+  PR_LEV0,                      // lev1..lev36: уровень дорожки, дБ
+  PR_PAN0 = PR_LEV0 + kTracks,  // pan1..pan36: −100..100
+  PR_CHM0 = PR_PAN0 + kTracks,  // chm1..chm36: 0 стерео, 1 только L, 2 только R
   PR_DRY = PR_CHM0 + kTracks,
   PR_MASTER,
   PR_LIMIT,
-  PR_TMUTE,  // команда виджета: mute дорожки 1..4 текущего парта; сам возвращается в 0
+  PR_TMUTE,  // команда виджета: mute дорожки 1..6 текущего парта; сам возвращается в 0
   PR_TGLIDE,                    // плавная смена темпа, мс
   PR_SSNAP,                     // привязка скорости: 0 свободно, 1 полутоны, 2 октавы
   PR_SGLIDE,                    // плавный ход скорости, мс
-  PR_SPD0,                      // spd1..spd16: ручная скорость дорожки
-  PR_SRESET = PR_SPD0 + kTracks,  // команда виджета: сброс скорости дорожки 1..4 текущего парта
+  PR_SPD0,                      // spd1..spd36: ручная скорость дорожки
+  PR_SRESET = PR_SPD0 + kTracks,  // команда виджета: сброс скорости дорожки 1..6 текущего парта
   PR_COUNT
 };
 struct ParamDef {
@@ -117,8 +134,8 @@ ParamDef kParams[PR_COUNT];
 void init_params() {
   struct S { const char* sym; int def, lo, hi; };
   const S settings[PR_LEV0] = {
-      {"rec_order", 0, 0, 1}, {"mode", 1, 0, 1}, {"len1", 0, 0, 16}, {"len2", 0, 0, 16}, {"len3", 0, 0, 16},
-      {"len4", 0, 0, 16}, {"fade_out", 200, 10, 4000}, {"fade_in", 200, 10, 4000}, {"rev_time", 50, 5, 1000},
+      {"grid", 1, 0, 2}, {"rec_order", 0, 0, 1}, {"mode", 1, 0, 1}, {"len1", 0, 0, 16}, {"len2", 0, 0, 16},
+      {"len3", 0, 0, 16}, {"len4", 0, 0, 16}, {"len5", 0, 0, 16}, {"len6", 0, 0, 16}, {"fade_out", 200, 10, 4000}, {"fade_in", 200, 10, 4000}, {"rev_time", 50, 5, 1000},
       {"mute_q", 2, 0, 3}, {"part_q", 3, 0, 3}};
   for (int i = 0; i < PR_LEV0; ++i) {
     kParams[i] = ParamDef{{}, (float)settings[i].def, (float)settings[i].lo, (float)settings[i].hi, false};
@@ -135,7 +152,7 @@ void init_params() {
   kParams[PR_DRY] = ParamDef{"dry", 0.0f, kMinDb, 6.0f, true};
   kParams[PR_MASTER] = ParamDef{"mst_db", 0.0f, kMinDb, 6.0f, true};  // не "master": так называется порт
   kParams[PR_LIMIT] = ParamDef{"limiter", 1.0f, 0.0f, 1.0f, false};
-  kParams[PR_TMUTE] = ParamDef{"tmute", 0.0f, 0.0f, 4.0f, false};
+  kParams[PR_TMUTE] = ParamDef{"tmute", 0.0f, 0.0f, 6.0f, false};
   kParams[PR_TGLIDE] = ParamDef{"tempo_glide", 500.0f, 100.0f, 4000.0f, false};
   kParams[PR_SSNAP] = ParamDef{"spd_snap", 0.0f, 0.0f, 2.0f, false};
   kParams[PR_SGLIDE] = ParamDef{"spd_glide", 150.0f, 0.0f, 2000.0f, false};
@@ -143,7 +160,7 @@ void init_params() {
     kParams[PR_SPD0 + t] = ParamDef{{}, 1.0f, kMinSpeed, kMaxSpeed, true};
     std::snprintf(kParams[PR_SPD0 + t].sym, 16, "spd%d", t + 1);
   }
-  kParams[PR_SRESET] = ParamDef{"sreset", 0.0f, 0.0f, 4.0f, false};
+  kParams[PR_SRESET] = ParamDef{"sreset", 0.0f, 0.0f, 6.0f, false};
 }
 constexpr uint32_t kReportPerRun = 4;  // ответов на patch:Get за один run()
 
@@ -194,7 +211,7 @@ struct Plugin {
     Settings s;
     s.rop = vals[PR_REC_ORDER] == 1;
     s.quantize = vals[PR_MODE] == 1;
-    for (int i = 0; i < kSlots; ++i) s.length[i] = vals[PR_LEN1 + i];
+    for (int i = 0; i < kMaxSlots; ++i) s.length[i] = vals[PR_LEN1 + i];
     s.fade_out_ms = (float)vals[PR_FADE_OUT];
     s.fade_in_ms = (float)vals[PR_FADE_IN];
     s.reverse_ms = (float)vals[PR_REV];
@@ -204,6 +221,21 @@ struct Plugin {
     s.spd_snap = (int)vals[PR_SSNAP];
     s.spd_glide_ms = vals[PR_SGLIDE];
     looper->set_settings(s);
+    looper->set_grid(grid_n(vals[PR_GRID]));  // та же сетка — ничего не делает
+  }
+  // Пользователь сменил сетку: номера дорожек теперь значат другое — микшер и скорости по умолчанию
+  // (при загрузке снапшота так не делаем: его микшер относится к его сетке).
+  void reset_track_params() {
+    for (int i = PR_LEV0; i < PR_COUNT; ++i) {
+      if (i == PR_DRY || i == PR_MASTER || i == PR_LIMIT || i == PR_TMUTE || i == PR_SRESET || i == PR_TGLIDE ||
+          i == PR_SSNAP || i == PR_SGLIDE)
+        continue;  // общие, не по номеру дорожки
+      if (vals[i] != kParams[i].def) {
+        vals[i] = kParams[i].def;
+        dirty[i] = true;
+      }
+      apply_mix_param(i);
+    }
   }
 
   // параметр микшера -> ядро
@@ -345,6 +377,8 @@ void handle_position(Plugin* pl, const LV2_Atom_Object* obj) {
   pl->clock.on_position(m);
 }
 
+void on_param(Plugin* pl, int i);
+
 void handle_patch_set(Plugin* pl, const LV2_Atom_Object* obj) {
   const LV2_Atom *prop = nullptr, *val = nullptr;
   lv2_atom_object_get(obj, pl->u.patch_property, &prop, pl->u.patch_value, &val, 0);
@@ -352,6 +386,11 @@ void handle_patch_set(Plugin* pl, const LV2_Atom_Object* obj) {
   int i = find_param(pl, reinterpret_cast<const LV2_Atom_URID*>(prop)->body);
   if (i < 0) return;
   set_param(pl, i, atom_number(pl, val, pl->vals[i]));
+  on_param(pl, i);
+}
+
+// Параметр i получил новое значение от хоста или виджета: применить.
+void on_param(Plugin* pl, int i) {
   if (i == PR_TMUTE) {
     if (pl->vals[i] >= 1.0f) pl->looper->mute_slot((int)pl->vals[i] - 1);
     pl->vals[i] = 0.0f;
@@ -359,11 +398,13 @@ void handle_patch_set(Plugin* pl, const LV2_Atom_Object* obj) {
     return;
   }
   if (i == PR_SRESET) {
-    if (pl->vals[i] >= 1.0f) pl->looper->speed_reset(pl->looper->part() * kSlots + (int)pl->vals[i] - 1);
+    if (pl->vals[i] >= 1.0f && pl->vals[i] <= pl->looper->grid())
+      pl->looper->speed_reset(pl->looper->part() * pl->looper->grid() + (int)pl->vals[i] - 1);
     pl->vals[i] = 0.0f;
     pl->dirty[i] = true;
     return;
   }
+  if (i == PR_GRID && grid_n(pl->vals[i]) != pl->looper->grid()) pl->reset_track_params();
   if (Plugin::is_setting(i)) pl->apply_settings();
   else pl->apply_mix_param(i);
 }
@@ -509,7 +550,7 @@ LV2_Handle instantiate(const LV2_Descriptor*, double rate, const char*, const LV
         pl->peaks = static_cast<PeakShm*>(mem);
         std::memset(pl->peaks, 0, sizeof(PeakShm));
         pl->peaks->ncols = kPeakCols;
-        pl->peaks->ntracks = kSlots;
+        pl->peaks->ntracks = kMaxSlots;
         pl->peaks->nlayers = kPeakLayers;
         pl->peaks->magic = kPeakMagic;
         pl->looper->set_peaks(pl->peaks);
@@ -607,30 +648,42 @@ void run(LV2_Handle h, uint32_t n) {
   pl->out(O_TSRC, (float)src);
   pl->out(O_CLK_BPM, (float)pl->midi_clock.bpm());
   pl->out(O_POS_CNT, (float)(pl->clock.messages() % 1000000));
-  uint32_t flags = 0;
-  for (int i = 0; i < kSlots; ++i) {
-    TrackView v = lp->view(i);
-    pl->out(O_ST1 + i, (float)v.state);
-    pl->out(O_POS1 + i, v.pos);
-    pl->out(O_LEN1 + i, v.len_s);
-    if (v.muted) flags |= 1u << i;
-    if (v.reversed) flags |= 1u << (4 + i);
-    if (v.can_undo) flags |= 1u << (8 + i);
-    if (v.can_redo) flags |= 1u << (12 + i);
-    if (v.stopped) flags |= 1u << (16 + i);
-    if (v.locked) flags |= 1u << (20 + i);
+  // дорожки текущего парта; места за краем сетки — пустые
+  const int n_grid = lp->grid();
+  uint32_t flags = 0, mutes = 0, revs = 0, stops = 0, locks = 0;
+  for (int i = 0; i < kMaxSlots; ++i) {
+    TrackView v{};
+    v.speed = v.espeed = 1.0f;
+    if (i < n_grid) v = lp->view(i);
+    pl->out(kOutSt[i], (float)v.state);
+    pl->out(kOutPos[i], v.pos);
+    pl->out(kOutLen[i], v.len_s);
+    pl->out(kOutPk[i], i < n_grid ? lp->peak(i) : 0.0f);
+    pl->out(kOutSpd[i], v.speed);
+    pl->out(kOutEspd[i], v.espeed);
+    if (v.muted) mutes |= 1u << i;
+    if (v.reversed) revs |= 1u << i;
+    if (v.stopped) stops |= 1u << i;
+    if (v.locked) locks |= 1u << i;
+    if (i < 4) {  // старый упакованный порт: дорожки 1–4
+      if (v.muted) flags |= 1u << i;
+      if (v.reversed) flags |= 1u << (4 + i);
+      if (v.can_undo) flags |= 1u << (8 + i);
+      if (v.can_redo) flags |= 1u << (12 + i);
+      if (v.stopped) flags |= 1u << (16 + i);
+      if (v.locked) flags |= 1u << (20 + i);
+    }
   }
   if (lp->rec_after_switch()) flags |= 1u << 24;  // запись взведена на новый парт
   pl->out(O_FLAGS, (float)flags);
+  pl->out(O_MUTES, (float)mutes);
+  pl->out(O_REVS, (float)revs);
+  pl->out(O_STOPS, (float)stops);
+  pl->out(O_LOCKS, (float)locks);
+  pl->out(O_GRID, (float)n_grid);
   pl->out(O_POOL, lp->pool_fill());
-  for (int i = 0; i < kSlots; ++i) pl->out(O_PK1 + i, lp->peak(i));
   pl->out(O_MPK_L, lp->master_peak(0));
   pl->out(O_MPK_R, lp->master_peak(1));
-  for (int i = 0; i < kSlots; ++i) {
-    const TrackView v = lp->view(i);
-    pl->out(O_SPD1 + i, v.speed);
-    pl->out(O_ESPD1 + i, v.espeed);
-  }
 }
 
 void cleanup(LV2_Handle h) {

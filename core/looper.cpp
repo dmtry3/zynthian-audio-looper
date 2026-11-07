@@ -99,18 +99,18 @@ void Looper::command(Cmd c) {
     case Cmd::TrackNext:
     case Cmd::TrackPrev:
       leave_track(a);
-      active_ = (active_ + (c == Cmd::TrackNext ? 1 : kSlots - 1)) % kSlots;
+      active_ = (active_ + (c == Cmd::TrackNext ? 1 : ns_ - 1)) % ns_;
       break;
     case Cmd::PartNext:
     case Cmd::PartPrev: {
-      const int d = c == Cmd::PartNext ? 1 : kParts - 1;
+      const int d = c == Cmd::PartNext ? 1 : ns_ - 1;
       if (pend_part_ >= 0) {  // переход ждёт границы: цель дальше или назад
-        const int np = (pend_part_ + d) % kParts;
+        const int np = (pend_part_ + d) % ns_;
         pend_part_ = np == cur_part_ ? -1 : np;
         if (pend_part_ < 0) rec_after_switch_ = false;
         break;
       }
-      const int target = (cur_part_ + d) % kParts;
+      const int target = (cur_part_ + d) % ns_;
       // из пустого парта и без квантования — сразу
       // сразу: текущий парт пустой, PART AT = сразу, или Free без «конца цикла» (тактов нет)
       if (!part_has_content(cur_part_) || set_.part_q == 0 || (!set_.quantize && set_.part_q != 3))
@@ -164,7 +164,7 @@ void Looper::start_rec(int ti) {
   t.rec = b;
   t.rec_frames = 0;
   t.rec_target = 0;
-  const int len_bars = set_.length[ti % kSlots];  // длина задаётся по месту дорожки в парте
+  const int len_bars = set_.length[ti % ns_];  // длина задаётся по месту дорожки в парте
   if (set_.quantize && len_bars > 0) t.rec_target = (uint64_t)std::llround(len_bars * (double)bar_frames());
   // Quantize: запись начинается на черте такта, запоминаем её долю для подстройки фазы
   t.rec_q = set_.quantize;
@@ -185,7 +185,7 @@ void Looper::rec_peaks_start(int ti) {
   t.rpk_n = 0;
   t.rpk_mn = t.rpk_mx = 0.0f;
   if (!peaks_ || !in_cur(ti)) return;
-  PeakTrack& pk = peaks_->t[ti % kSlots];
+  PeakTrack& pk = peaks_->t[ti % ns_];
   clear_wave(pk.rec);
   pk.rec_col_s = (float)((double)t.rpk_step / sr_);
   __atomic_store_n(&pk.rec_cols, 0u, __ATOMIC_RELEASE);
@@ -203,7 +203,7 @@ void Looper::rec_peaks(int ti, float l, float r) {
   t.rpk_n = 0;
   t.rpk_mn = t.rpk_mx = 0.0f;
   if (!peaks_ || !in_cur(ti)) return;
-  PeakTrack& pk = peaks_->t[ti % kSlots];
+  PeakTrack& pk = peaks_->t[ti % ns_];
   uint32_t n = pk.rec_cols;
   if (n >= kPeakCols) {  // колонки кончились: вдвое крупнее (512 сравнений раз в несколько секунд)
     for (uint32_t c = 0; c < kPeakCols / 2; ++c) {
@@ -229,7 +229,7 @@ void Looper::cancel_rec(int ti) {
   t.rec = -1;
   t.rec_frames = t.rec_target = 0;
   t.st = TState::Empty;
-  if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % kSlots].rec_cols, 0u, __ATOMIC_RELEASE);
+  if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % ns_].rec_cols, 0u, __ATOMIC_RELEASE);
 }
 
 void Looper::request_close(int ti) {
@@ -262,7 +262,7 @@ void Looper::close_loop(int ti, uint64_t L) {
   int32_t base = t.rec;
   t.rec = -1;
   t.rec_frames = t.rec_target = 0;
-  if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % kSlots].rec_cols, 0u, __ATOMIC_RELEASE);
+  if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % ns_].rec_cols, 0u, __ATOMIC_RELEASE);
   clear_redo(t);
   t.sum = base;
   t.len = L;
@@ -312,7 +312,7 @@ void Looper::start_dub(int ti) {
   t.undo_after_dub = t.reset_after_dub = false;
   t.st = TState::Dub;
   if (peaks_ && in_cur(ti)) {  // волна нового слоя растёт вживую
-    PeakTrack& pk = peaks_->t[ti % kSlots];
+    PeakTrack& pk = peaks_->t[ti % ns_];
     clear_wave(pk.dub);
     __atomic_store_n(&pk.dub_active, 1u, __ATOMIC_RELEASE);
     t.plive = true;
@@ -331,7 +331,7 @@ void Looper::finish_dub(int ti) {
   t.dub_end = -1;
   t.st = TState::Play;
   mark_peaks(t);
-  if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % kSlots].dub_active, 0u, __ATOMIC_RELEASE);
+  if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % ns_].dub_active, 0u, __ATOMIC_RELEASE);
   if (t.lock_to >= 0) {  // Lock-копия ждала конца овердаба, чтобы затухание попало и в неё;
     t.lock_ready = true;  // делаем её в начале следующего кадра (этот кадр уже прозвучал)
     clones_pending_ = true;
@@ -406,7 +406,22 @@ void Looper::reset_track(int ti) {
   swap_to(ti, -1, false);
 }
 
-void Looper::reset_all_now() {
+// Смена сетки: если рабочий поток считает undo/redo, ждём его ответа (как удержание Reset).
+void Looper::set_grid(int n) {
+  if (!valid_grid(n) || (n == ns_ && grid_pending_ < 0)) return;
+  grid_pending_ = n;
+  if (!job_pending_ && !job_running_) apply_grid();
+}
+
+void Looper::apply_grid() {
+  const int n = grid_pending_;
+  grid_pending_ = -1;
+  if (!valid_grid(n) || n == ns_) return;
+  ns_ = n;
+  reset_all_now(false);  // звучащие лупы затухают; дорожки за краем новой сетки тоже доигрывают затухание
+}
+
+void Looper::reset_all_now(bool full) {
   user_stop_ = false;
   ps_pending_ = 0;
   pend_part_ = -1;
@@ -414,7 +429,7 @@ void Looper::reset_all_now() {
   for (int ti = 0; ti < kTracks; ++ti) {
     Track& t = tr_[ti];
     mark_peaks(t);
-    if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % kSlots].dub_active, 0u, __ATOMIC_RELEASE);
+    if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % ns_].dub_active, 0u, __ATOMIC_RELEASE);
     if (t.rec >= 0) pool_.free_buf(t.rec);
     if (t.layer >= 0) pool_.free_buf(t.layer);
     t.rec = t.layer = -1;
@@ -449,7 +464,7 @@ void Looper::reset_all_now() {
     t.locked = false;
     t.lock_to = -1;
     t.lock_ready = false;
-    t.mspd = 1.0f;
+    if (full) t.mspd = 1.0f;
     t.mcur = t.spd = t.tspd = 1.0;
     t.phase_reset = t.phase_wait = false;
     t.dub_end = -1;
@@ -457,7 +472,7 @@ void Looper::reset_all_now() {
     t.seam_t = kNoSeam;
   }
   default_locks();
-  reset_mixer();
+  if (full) reset_mixer();
   // курсор — на первую дорожку первого парта
   cur_part_ = 0;
   active_ = 0;
@@ -497,7 +512,7 @@ void Looper::start_reverse(Track& t, double n) {
 }
 
 void Looper::mute_slot(int slot) {
-  if (slot < 0 || slot >= kSlots) return;
+  if (slot < 0 || slot >= ns_) return;
   const int k = idx(slot);
   Track& t = tr_[k];
   if (t.st != TState::Play && t.st != TState::Dub) return;
@@ -641,12 +656,13 @@ bool Looper::take_work(WorkMsg& m) {
   }
   if (!peaks_) return false;
   // пики: сумма и последние слои овердабов (их номера с начала дорожки — для цвета)
-  for (int k = idx(0); k < idx(0) + kSlots; ++k) {
+  for (int k = idx(0); k < idx(0) + ns_; ++k) {
     Track& t = tr_[k];
     if (!t.pdirty || t.pinflight || t.busy) continue;
     m = WorkMsg{};
     m.op = 3;
     m.track = (uint8_t)k;
+    m.slot = (uint8_t)slot_of(k);
     m.src = t.sum;
     m.layer = m.dst = -1;
     m.len = t.sum >= 0 ? t.len : 0;
@@ -683,6 +699,7 @@ void Looper::cancel_work(const WorkMsg& m) {
     reset_all_pending_ = false;
     reset_all_now();
   }
+  if (grid_pending_ > 0) apply_grid();
 }
 
 void Looper::do_work(const WorkMsg& m, WorkResp& r) {
@@ -691,7 +708,7 @@ void Looper::do_work(const WorkMsg& m, WorkResp& r) {
   r.gen = m.gen;
   if (m.op == 3) {
     if (!peaks_) return;
-    PeakTrack& pk = peaks_->t[m.track % kSlots];
+    PeakTrack& pk = peaks_->t[m.slot];
     seq_begin(pk);
     compute_wave(pool_, m.src, m.len, pk.sum);
     for (uint32_t i = 0; i < m.nl; ++i) {
@@ -755,6 +772,7 @@ void Looper::work_done(const WorkResp& r) {
     reset_all_pending_ = false;
     reset_all_now();
   }
+  if (grid_pending_ > 0) apply_grid();
 }
 
 // ---------------------------------------------------------------- звук
@@ -896,7 +914,7 @@ void Looper::dub_resampled(int ti, float il, float ir, double step) {
 void Looper::live_peaks(int ti, uint64_t p) {
   Track& t = tr_[ti];
   if (!t.len) return;
-  PeakTrack& pk = peaks_->t[ti % kSlots];
+  PeakTrack& pk = peaks_->t[ti % ns_];
   const uint32_t c = (uint32_t)(p * kPeakCols / t.len);
   float l, r;
   pool_.read(pool_.buf(t.sum), p, l, r);
@@ -1056,7 +1074,7 @@ void Looper::set_time(const TimeInfo& ti) {
   if (time_seen_ && pool_.ok()) {
     if (started) transport_start();
     else if (jumped)
-      for (int k = idx(0); k < idx(0) + kSlots; ++k) resync(k);
+      for (int k = idx(0); k < idx(0) + ns_; ++k) resync(k);
     else if (stopped_now) transport_stop();
   }
   time_seen_ = true;
@@ -1066,7 +1084,7 @@ void Looper::set_time(const TimeInfo& ti) {
 // Запись основы не прерывается: лупер считает такты сам.
 void Looper::transport_stop() {
   tstop_ = true;
-  for (int k = idx(0); k < idx(0) + kSlots; ++k) {
+  for (int k = idx(0); k < idx(0) + ns_; ++k) {
     Track& t = tr_[k];
     if (t.st != TState::Play && t.st != TState::Dub) continue;
     if (t.st == TState::Dub) end_dub(k);
@@ -1079,7 +1097,7 @@ void Looper::transport_stop() {
 // (записанные в Free — с начала цикла), остальные встают в фазу.
 void Looper::transport_start() {
   tstop_ = false;
-  for (int k = idx(0); k < idx(0) + kSlots; ++k) {
+  for (int k = idx(0); k < idx(0) + ns_; ++k) {
     Track& t = tr_[k];
     if (!t.stopped) {
       if (!t.ustop) resync(k);
@@ -1114,7 +1132,7 @@ void Looper::wake(int ti) {
 void Looper::apply_playstop(bool stop) {
   user_stop_ = stop;
   if (!stop) tstop_ = false;
-  for (int k = idx(0); k < idx(0) + kSlots; ++k) {
+  for (int k = idx(0); k < idx(0) + ns_; ++k) {
     Track& t = tr_[k];
     if (t.st != TState::Play && t.st != TState::Dub) continue;
     if (stop) {
@@ -1212,7 +1230,7 @@ void Looper::update_speeds(uint32_t n) {
 // ---------------------------------------------------------------- парты и Lock
 
 bool Looper::part_has_content(int p) const {
-  for (int k = p * kSlots; k < (p + 1) * kSlots; ++k) {
+  for (int k = p * ns_; k < (p + 1) * ns_; ++k) {
     const Track& t = tr_[k];
     if (t.sum >= 0 || t.st == TState::Rec || t.st == TState::Closing) return true;
   }
@@ -1221,14 +1239,14 @@ bool Looper::part_has_content(int p) const {
 
 uint32_t Looper::parts_mask() const {
   uint32_t m = 0;
-  for (int p = 0; p < kParts; ++p)
+  for (int p = 0; p < ns_; ++p)
     if (part_has_content(p)) m |= 1u << p;
   return m;
 }
 
 // По умолчанию первая дорожка каждого парта с Lock (решение пользователя).
 void Looper::default_locks() {
-  for (int p = 0; p < kParts; ++p) tr_[p * kSlots].locked = true;
+  for (int p = 0; p < ns_; ++p) tr_[p * ns_].locked = true;
 }
 
 // Дорожка становится пустой и без истории (под Lock-копию в пустом парте).
@@ -1248,7 +1266,7 @@ void Looper::clear_track(int k) {
   const bool inflight = t.pinflight;
   t = Track();
   t.seam_t = kNoSeam;
-  t.locked = k % kSlots == 0;
+  t.locked = k % ns_ == 0;
   t.pgen = pgen + 1;
   t.pdirty = true;
   t.pinflight = inflight;
@@ -1300,11 +1318,11 @@ void Looper::clone_into(int from, int to) {
 // остальные затихают, активной становится первая свободная. Записанный парт:
 // его лупы начинают с начала цикла, старый парт затихает. Запись и овердаб закрываются.
 void Looper::switch_part(int p) {
-  if (p == cur_part_ || p < 0 || p >= kParts) return;
+  if (p == cur_part_ || p < 0 || p >= ns_) return;
   const int old = cur_part_;
   pend_part_ = -1;
-  for (int i = 0; i < kSlots; ++i) {
-    const int k = old * kSlots + i;
+  for (int i = 0; i < ns_; ++i) {
+    const int k = old * ns_ + i;
     Track& t = tr_[k];
     if (t.st == TState::Armed) t.st = TState::Empty;
     else if (t.st == TState::Rec) request_close(k);
@@ -1315,8 +1333,8 @@ void Looper::switch_part(int p) {
   cur_part_ = p;
   if (empty_target) {
     int first_free = -1;
-    for (int i = 0; i < kSlots; ++i) {
-      const int o = old * kSlots + i, n = p * kSlots + i;
+    for (int i = 0; i < ns_; ++i) {
+      const int o = old * ns_ + i, n = p * ns_ + i;
       Track& ot = tr_[o];
       if (ot.locked && ot.sum >= 0 && (ot.st == TState::Play || ot.st == TState::Dub)) {
         if (ot.st == TState::Dub) ot.lock_to = n;  // копия после затухания овердаба
@@ -1327,8 +1345,8 @@ void Looper::switch_part(int p) {
     }
     active_ = first_free >= 0 ? first_free : 0;
   } else {
-    for (int i = 0; i < kSlots; ++i) {
-      const int k = p * kSlots + i;
+    for (int i = 0; i < ns_; ++i) {
+      const int k = p * ns_ + i;
       Track& t = tr_[k];
       if (t.sum < 0 || (t.st != TState::Play && t.st != TState::Dub)) continue;
       t.pos = t.dir > 0 ? 0.0 : (double)(t.len - 1);
@@ -1347,9 +1365,9 @@ void Looper::switch_part(int p) {
       t.xpos = t.pos;
     }
   }
-  for (int k = p * kSlots; k < (p + 1) * kSlots; ++k) mark_peaks(tr_[k]);
+  for (int k = p * ns_; k < (p + 1) * ns_; ++k) mark_peaks(tr_[k]);
   if (peaks_)
-    for (int i = 0; i < kSlots; ++i) __atomic_store_n(&peaks_->t[i].dub_active, 0u, __ATOMIC_RELEASE);
+    for (int i = 0; i < ns_; ++i) __atomic_store_n(&peaks_->t[i].dub_active, 0u, __ATOMIC_RELEASE);
   if (rec_after_switch_) {  // запись с границы перехода на активной дорожке нового парта
     rec_after_switch_ = false;
     const int k = idx(active_);
@@ -1405,7 +1423,7 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
   // «конец цикла» для смены парта — по самой длинной играющей дорожке текущего парта
   master_ = -1;
   uint64_t longest = 0;
-  for (int k = idx(0); k < idx(0) + kSlots; ++k) {
+  for (int k = idx(0); k < idx(0) + ns_; ++k) {
     const Track& t = tr_[k];
     if ((t.st == TState::Play || t.st == TState::Dub) && t.len > longest) {
       longest = t.len;
@@ -1440,7 +1458,11 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
     const float ir = in_r ? in_r[i] : 0.0f;
     float ol = 0.0f, orr = 0.0f;
     if (pool_.ok())
-      for (int k = 0; k < kTracks; ++k) track_sample(k, i, il, ir, ol, orr);
+      for (int k = 0; k < kTracks; ++k) {
+        const Track& t = tr_[k];  // пустая без затухания: делать нечего (дорожек до 36)
+        if ((t.st == TState::Empty || t.st == TState::Armed) && t.xf_len == 0) continue;
+        track_sample(k, i, il, ir, ol, orr);
+      }
     // мастер лупов: уровень, мягкий ограничитель, пики; сухой сигнал мимо ограничителя
     const float mg = mg0 + mgs * (float)i;
     ol *= mg;
@@ -1472,9 +1494,9 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
   mpeak_[0] = std::fmax(mpeak_[0] * fall, mbl);
   mpeak_[1] = std::fmax(mpeak_[1] * fall, mbr);
   if (peaks_)  // виджет перечитает дорисованные колонки
-    for (int k = idx(0); k < idx(0) + kSlots; ++k)
+    for (int k = idx(0); k < idx(0) + ns_; ++k)
       if (tr_[k].plive) {
-        __atomic_add_fetch(&peaks_->t[k % kSlots].live, 1u, __ATOMIC_RELEASE);
+        __atomic_add_fetch(&peaks_->t[k % ns_].live, 1u, __ATOMIC_RELEASE);
         tr_[k].plive = false;
       }
 }

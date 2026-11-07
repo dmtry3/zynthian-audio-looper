@@ -741,6 +741,80 @@ static void test_parts_lock() {
   s.wav("parts_lock");
 }
 
+// Сетка 6×6 и 2×2: дорожки и парты по кругу в пределах сетки, Lock в пустой парт;
+// смена сетки стирает лупы плавно и освобождает память, микшер и скорости не трогает.
+static void test_grid() {
+  Sim s;
+  const uint32_t free0 = s.lp->free_chunks();
+  CHECK(s.lp->grid() == 4);
+  s.lp->set_grid(3);  // такой сетки нет
+  CHECK(s.lp->grid() == 4);
+  s.lp->set_grid(6);
+  CHECK(s.lp->grid() == 6);
+  for (int i = 1; i <= 6; ++i) {
+    s.cmd(Cmd::TrackNext);
+    CHECK(s.lp->active() == i % 6);
+  }
+  s.cmd(Cmd::TrackPrev);
+  CHECK(s.lp->active() == 5);
+  // дорожка 6 и дорожка 1 (с Lock по умолчанию) в парте 1
+  s.in_l = sine(220.0, 0.4f);
+  s.cmd(Cmd::Rec);
+  s.run(24000);
+  s.cmd(Cmd::Rec);
+  s.cmd(Cmd::TrackNext);
+  CHECK(s.lp->active() == 0);
+  s.cmd(Cmd::Rec);
+  s.run(24000);
+  s.cmd(Cmd::Rec);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(BLOCK * 8);
+  CHECK(s.v(5).state == 3 && s.v(0).state == 3 && s.v(0).locked && s.lp->parts_mask() == 1u);
+  // назад из парта 1 — парт 6 (пустой): Lock-дорожка переходит, дорожка 6 — нет
+  s.set.part_q = 0;
+  s.apply();
+  s.cmd(Cmd::PartPrev);
+  s.run(BLOCK * 8);
+  CHECK(s.lp->part() == 5 && s.v(0).state == 3 && s.v(5).state == 0);
+  CHECK(s.lp->parts_mask() == (1u | 1u << 5));
+  // микшер и скорость дорожки 36 (парт 6, место 6) переживают смену сетки
+  Mix m;
+  m.level_db = -6.0f;
+  s.lp->set_mix(35, m);
+  s.lp->set_speed(35, 0.5f);
+  const uint64_t t0 = s.t;
+  s.lp->set_grid(2);
+  CHECK(s.lp->grid() == 2 && s.lp->part() == 0 && s.lp->active() == 0 && s.lp->parts_mask() == 0u);
+  s.run(BLOCK * 16);
+  CHECK(s.max_step(t0, s.t) < 0.05f);             // лупы затихли плавно
+  CHECK(rms(s.slice(s.t - BLOCK * 4, BLOCK * 4)) < 1e-6f);
+  CHECK(s.lp->free_chunks() == free0);           // память вернулась в пул
+  CHECK(s.lp->mix(35).level_db == -6.0f && s.lp->speed(35) == 0.5f);
+  CHECK(s.v(0).locked && !s.v(1).locked);
+  s.cmd(Cmd::TrackNext);
+  s.cmd(Cmd::TrackNext);
+  CHECK(s.lp->active() == 0);
+  s.cmd(Cmd::PartNext);  // пустой парт: сразу
+  CHECK(s.lp->part() == 1);
+  s.cmd(Cmd::PartNext);
+  CHECK(s.lp->part() == 0);
+  // в 2×2 записывается и играет вторая дорожка второго парта
+  s.cmd(Cmd::PartNext);
+  s.cmd(Cmd::TrackNext);
+  s.in_l = sine(330.0, 0.3f);
+  s.cmd(Cmd::Rec);
+  s.run(24000);
+  s.cmd(Cmd::Rec);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(24000);
+  CHECK(s.lp->active_index() == 3 && s.v(1).state == 3 && rms(s.slice(s.t - 12000, 12000)) > 0.1f);
+  CHECK(s.lp->parts_mask() == 2u);
+  // удержание Reset сбрасывает и микшер, сетка остаётся
+  s.cmd(Cmd::ResetAll);
+  s.run(BLOCK * 16);
+  CHECK(s.lp->grid() == 2 && s.lp->mix(35).level_db == 0.0f && s.lp->speed(35) == 1.0f);
+}
+
 // Из пустого парта — сразу; запись закрывается на границе перехода; Lock во время овердаба.
 static void test_parts_edges() {
   const uint64_t BAR = 96000;
@@ -1173,6 +1247,7 @@ int main() {
   test_play_stop();
   test_peaks();
   test_rec_peaks();
+  test_grid();
   test_parts_lock();
   test_parts_edges();
   test_part_at_loop_end();
