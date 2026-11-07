@@ -196,7 +196,8 @@
         <urn:audiolooper:looper#bpb> ,
         <urn:audiolooper:looper#hold_ms> ,
         <urn:audiolooper:looper#reset_ms> ,
-        <urn:audiolooper:looper#latency> ;
+        <urn:audiolooper:looper#latency> ,
+        <urn:audiolooper:looper#pool_mb> ;
     lv2:port
     [
         a lv2:InputPort , lv2:AudioPort ; lv2:index 18 ; lv2:symbol "in_l" ; lv2:name "In L" ;
@@ -551,6 +552,10 @@
         a lv2:OutputPort , lv2:ControlPort ;
         lv2:index 84 ; lv2:symbol "o_grid" ; lv2:name "Out: Grid" ;
         lv2:minimum 2 ; lv2:maximum 6 ;
+    ] , [
+        a lv2:OutputPort , lv2:ControlPort ;
+        lv2:index 85 ; lv2:symbol "o_pool_mb" ; lv2:name "Out: Pool MB" ;
+        lv2:minimum 0 ; lv2:maximum 4096 ;
     ] .
 
 # Настройки: LV2-параметры (patch:Set), скрыты со страниц, меняются на вкладке настроек виджета.
@@ -2085,5 +2090,14 @@
     rdfs:label "Latency Comp" ;
     rdfs:range atom:Int ;
     lv2:default 0 ; lv2:minimum 0 ; lv2:maximum 100 ;
+    pprops:notOnGUI true ;
+    lv2:portProperty pprops:notOnGUI .
+
+<urn:audiolooper:looper#pool_mb>
+    a lv2:Parameter ;
+    lv2:symbol "pool_mb" ;
+    rdfs:label "Memory Pool MB" ;
+    rdfs:range atom:Int ;
+    lv2:default 2048 ; lv2:minimum 256 ; lv2:maximum 4096 ;
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .

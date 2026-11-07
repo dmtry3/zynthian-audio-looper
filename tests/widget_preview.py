@@ -118,6 +118,7 @@ class Processor:
         self.controllers_dict["hold_ms"] = Ctrl("hold_ms", 500, 200, 2000)
         self.controllers_dict["reset_ms"] = Ctrl("reset_ms", 1000, 500, 3000)
         self.controllers_dict["latency"] = Ctrl("latency", 0, 0, 100)
+        self.controllers_dict["pool_mb"] = Ctrl("pool_mb", 2048, 256, 4096)
 
 
 class Control:
@@ -408,7 +409,7 @@ def main():
     for _ in range(4):  # палец несколько раз вверх: до конца списка
         scroll(-wdg.height)
     check("прокрутка до конца", abs(wdg.s_scroll - wdg.s_max) < 1)
-    check("внизу видны LIMITER и TRACK 4", "LIMITER" in texts(wdg) and "TRACK 4" in texts(wdg))
+    check("внизу видны LIMITER и пул", "LIMITER" in texts(wdg) and "4G" in texts(wdg))
     check("прокрутка не трогает ползунки", cd["fade_out"].value == w0)
     no_overlap("800x480, настройки внизу")
     slide_to("len2", 2)
@@ -518,19 +519,32 @@ def main():
     tap_seg("grid", 2)
     check("второе касание: 6×6", cd["grid"].value == 2)
     tap_seg("grid", 0)
-    wdg.grid_confirm = (0, time.monotonic() - 1)  # три секунды прошли
+    wdg.grid_confirm = ("grid", 0, time.monotonic() - 1)  # три секунды прошли
     tap_seg("grid", 0)
     check("подтверждение истекло: снова только спрашивает", cd["grid"].value == 2)
     m["o_parts"] = 0.0
     tap_seg("grid", 1)
     check("лупов нет: сразу", cd["grid"].value == 1)
+    # пул памяти: 256M … 4G, тоже с подтверждением; рядом заполнение
+    m["o_parts"], m["o_pool"], m["o_pool_mb"] = 1.0, 0.12, 2048.0
+    tap_seg("pool_mb", 4)
+    check("пул: первое касание только спрашивает", cd["pool_mb"].value == 2048 and "CLEAR ALL?" in texts(wdg))
+    check("заполнение пула 12%", "POOL 12%" in texts(wdg))
+    tap_seg("pool_mb", 4)
+    check("пул: второе касание — 4096 МБ", cd["pool_mb"].value == 4096)
+    m["o_pool_mb"] = 0.0
+    wdg.update()
+    check("пул меняется: POOL ...", "POOL ..." in texts(wdg))
+    no_overlap("800x480, пул")
+    m["o_parts"], m["o_pool_mb"] = 0.0, 4096.0
+    tap_seg("pool_mb", 0)
+    check("лупов нет: пул сразу 256 МБ", cd["pool_mb"].value == 256)
     # плагин в 6×6: 6 строк, длины 6 дорожек, флаги масками
     m["o_grid"], m["o_part"], m["o_track"] = 6.0, 5.0, 5.0
     m["o_mutes"], m["o_revs"], m["o_stops"], m["o_locks"] = 1.0 * (1 << 4), 1.0 * (1 << 5), 0.0, 1.0
     m["o_st5"], m["o_len5"], m["o_pos5"], m["o_st6"], m["o_len6"], m["o_pos6"] = 3.0, 4.0, 0.2, 3.0, 4.0, 0.7
     wdg.settings_open = True
-    wdg.s_scroll = 1e9
-    wdg.update()
+    into_view("ssl", "len6")
     check("в 6×6 в настройках длина дорожки 6", "TRACK 6" in texts(wdg))
     wdg.settings_open = False
     wdg.update()

@@ -109,6 +109,31 @@ int main() {
     on_param(&pl, PR_RHOLD);
     pl.buttons[reset_b].process(0.0f, 128);
     CHECK(hold_after(reset_b, 1000) == 751);
+    // пул: при загрузке 64 МБ (в тесте), другие настройки замену не запускают, pool_mb — запускает
+    auto blocks = [&](int nb) {
+      float in[128] = {}, ol[128], orr[128];
+      TimeInfo ti;
+      for (int b = 0; b < nb; ++b) {
+        pl.looper->process(in, in, ol, orr, 128, ti);
+        WorkMsg wm;
+        while (pl.looper->take_work(wm)) {
+          WorkResp wr;
+          pl.looper->do_work(wm, wr);
+          pl.looper->work_done(wr);
+        }
+      }
+    };
+    const size_t before = pl.looper->pool_bytes();
+    set_param(&pl, PR_FADE_OUT, 300);
+    on_param(&pl, PR_FADE_OUT);
+    blocks(4);
+    CHECK(!pl.looper->pool_changing() && pl.looper->pool_bytes() == before);
+    set_param(&pl, PR_POOL, 300);
+    on_param(&pl, PR_POOL);
+    CHECK(pl.looper->pool_changing());
+    blocks(8);
+    CHECK(!pl.looper->pool_changing() && (pl.looper->pool_bytes() >> 20) >= 299 &&
+          (pl.looper->pool_bytes() >> 20) <= 300);
     delete pl.looper;
   }
   std::printf("plugin: %d passed, %d failed\n", g_pass, g_fail);

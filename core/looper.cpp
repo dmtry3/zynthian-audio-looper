@@ -47,6 +47,7 @@ bool Looper::init(double sample_rate, size_t pool_bytes) {
 
 void Looper::command(Cmd c) {
   if (!pool_.ok()) return;
+  if (pool_state_ != PS_IDLE && c == Cmd::Rec) return;  // меняется пул: запись подождёт
   const int a = idx(active_);
   Track& t = tr_[a];
   switch (c) {
@@ -425,6 +426,31 @@ void Looper::reset_track(int ti) {
   swap_to(ti, -1, false);
 }
 
+void Looper::set_pool_size(size_t bytes) {
+  if (bytes < ((size_t)32 << 20)) return;
+  if (pool_state_ == PS_IDLE && bytes == pool_.bytes()) return;
+  if (pool_state_ >= PS_DRAIN && bytes == pool_req_) return;
+  pool_req_ = bytes;
+  if (pool_state_ == PS_IDLE) pool_state_ = PS_REQ;
+}
+
+// Смена пула по шагам, в начале каждого блока (RT).
+void Looper::pool_step() {
+  if (pool_state_ == PS_REQ) {
+    if (job_pending_ || job_running_) return;  // undo/redo дочитает старый пул
+    reset_all_now(false);                      // лупы затихают по кроссфейду, микшер остаётся
+    pool_state_ = PS_DRAIN;
+  }
+  if (pool_state_ == PS_DRAIN) {
+    for (const auto& t : tr_)
+      if (t.st != TState::Empty || t.xf_len > 0 || t.pinflight) return;
+    if (job_pending_ || job_running_) return;
+    pool_.swap(spare_);  // пул без памяти: лупер молчит, сухой сигнал идёт
+    pool_state_ = PS_ALLOC;
+    pool_msg_ = true;
+  }
+}
+
 // Смена сетки: если рабочий поток считает undo/redo, ждём его ответа (как удержание Reset).
 void Looper::set_grid(int n) {
   if (!valid_grid(n) || (n == ns_ && grid_pending_ < 0)) return;
@@ -669,6 +695,14 @@ bool Looper::post_job(int ti, uint8_t op, int32_t layer) {
 }
 
 bool Looper::take_work(WorkMsg& m) {
+  if (pool_msg_) {
+    pool_msg_ = false;
+    m = WorkMsg{};
+    m.op = 4;
+    m.len = pool_req_;
+    return true;
+  }
+  if (pool_state_ >= PS_DRAIN) return false;  // пул вот-вот уйдёт: заданий, читающих его, не даём
   if (job_pending_) {
     m = job_;
     job_pending_ = false;
@@ -703,6 +737,10 @@ bool Looper::take_work(WorkMsg& m) {
 }
 
 void Looper::cancel_work(const WorkMsg& m) {
+  if (m.op == 4) {  // хост не принял: отдадим ещё раз
+    pool_msg_ = true;
+    return;
+  }
   if (m.op == 3) {
     Track& t = tr_[m.track];
     t.pinflight = false;
@@ -727,6 +765,12 @@ void Looper::do_work(const WorkMsg& m, WorkResp& r) {
   r.op = m.op;
   r.track = m.track;
   r.gen = m.gen;
+  if (m.op == 4) {  // рабочий поток: старый пул освободить, новый выделить (не вышло — вдвое меньше)
+    spare_.release();
+    for (size_t b = (size_t)m.len; b >= ((size_t)32 << 20); b /= 2)
+      if (spare_.init(b, 4096)) break;
+    return;
+  }
   if (m.op == 3) {
     if (!peaks_) return;
     PeakTrack& pk = peaks_->t[m.slot];
@@ -765,6 +809,12 @@ void Looper::do_work(const WorkMsg& m, WorkResp& r) {
 }
 
 void Looper::work_done(const WorkResp& r) {
+  if (r.op == 4) {  // новый пул готов
+    if (spare_.ok()) pool_.swap(spare_);
+    pool_state_ = PS_IDLE;
+    for (auto& t : tr_) mark_peaks(t);
+    return;
+  }
   if (r.op == 3) {  // пики готовы; если дорожка успела измениться — посчитать ещё раз
     Track& t = tr_[r.track];
     t.pinflight = false;
@@ -1449,6 +1499,7 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
   const float mgs = n ? (master_g_ - mg0) / (float)n : 0.0f;
   const float dgs = n ? (dry_g_ - dg0) / (float)n : 0.0f;
   const float lim_rel = (float)std::exp(-1.0 / (kLimRelS * sr_));
+  pool_step();
   update_speeds(n);
   lat_ = (uint32_t)std::lround(std::fmin(100.0f, std::fmax(0.0f, set_.latency_ms)) * sr_ / 1000.0);
   float mbl = 0.0f, mbr = 0.0f;

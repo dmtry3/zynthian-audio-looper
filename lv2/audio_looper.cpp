@@ -32,7 +32,7 @@ namespace {
 
 using namespace alp;
 
-constexpr size_t kPoolBytes = (size_t)2 << 30;  // 2 ГБ по ТЗ (настройка размера — этап 6)
+constexpr int kPoolMbDefault = 2048;  // пул при загрузке: 2 ГБ по ТЗ; настройка pool_mb меняет его на ходу
 
 // Порядок совпадает с lv2:index в audio_looper.ttl.
 // Входные контроллеры идут первыми (0..17): Zynthian нумерует LV2-параметры сразу после
@@ -59,6 +59,7 @@ enum Port : uint32_t {
   // сетка до 6×6 (этап 7): дорожки 5 и 6, флаги дорожек масками, сама сетка
   O_ST5, O_ST6, O_POS5, O_POS6, O_LEN5, O_LEN6, O_PK5, O_PK6, O_SPD5, O_SPD6, O_ESPD5, O_ESPD6,
   O_MUTES, O_REVS, O_STOPS, O_LOCKS, O_GRID,
+  O_POOL_MB,  // фактический размер пула, МБ (0 — меняется)
   P_COUNT
 };
 
@@ -126,6 +127,7 @@ enum Param {
   PR_HOLD,                      // порог удержания педали, мс
   PR_RHOLD,                     // порог удержания Reset, мс
   PR_LAT,                       // компенсация задержки, мс
+  PR_POOL,                      // пул памяти, МБ
   PR_COUNT
 };
 struct ParamDef {
@@ -169,6 +171,7 @@ void init_params() {
   kParams[PR_HOLD] = ParamDef{"hold_ms", 500.0f, 200.0f, 2000.0f, false};
   kParams[PR_RHOLD] = ParamDef{"reset_ms", 1000.0f, 500.0f, 3000.0f, false};
   kParams[PR_LAT] = ParamDef{"latency", 0.0f, 0.0f, 100.0f, false};
+  kParams[PR_POOL] = ParamDef{"pool_mb", (float)kPoolMbDefault, 256.0f, 4096.0f, false};
 }
 constexpr uint32_t kReportPerRun = 4;  // ответов на patch:Get за один run()
 
@@ -196,6 +199,7 @@ struct Plugin {
   MidiClock midi_clock;
   uint64_t now = 0;  // сэмплов от старта плагина
   int widget = 0;
+  int pool_req_mb = kPoolMbDefault;  // последний запрошенный размер пула
   int last_action = A_NONE;
   uint32_t action_count = 0;
   float vals[PR_COUNT];
@@ -232,6 +236,12 @@ struct Plugin {
     looper->set_settings(s);
     clock.set_default_bpb((int)vals[PR_BPB]);
     configure_buttons();
+    // пул — только когда изменился сам параметр: смена стирает лупы
+    // (если при загрузке дали меньше запрошенного, другие настройки не должны запускать замену)
+    if ((int)vals[PR_POOL] != pool_req_mb) {
+      pool_req_mb = (int)vals[PR_POOL];
+      looper->set_pool_size((size_t)pool_req_mb << 20);
+    }
     looper->set_grid(grid_n(vals[PR_GRID]));  // та же сетка — ничего не делает
   }
   // Пороги удержания из настроек: Reset — свой, остальные кнопки с удержанием — общий.
@@ -276,7 +286,7 @@ struct Plugin {
     }
   }
   static bool is_setting(int i) {
-    return i < PR_LEV0 || i == PR_TGLIDE || i == PR_SSNAP || i == PR_SGLIDE || (i >= PR_BPB && i <= PR_LAT);
+    return i < PR_LEV0 || i == PR_TGLIDE || i == PR_SSNAP || i == PR_SGLIDE || (i >= PR_BPB && i <= PR_POOL);
   }
   void apply_all() {
     apply_settings();
@@ -521,7 +531,7 @@ LV2_Handle instantiate(const LV2_Descriptor*, double rate, const char*, const LV
   Plugin* pl = new (std::nothrow) Plugin();
   if (!pl) return nullptr;
   pl->looper = new (std::nothrow) Looper();
-  if (!pl->looper || !pl->looper->init(rate, kPoolBytes)) {
+  if (!pl->looper || !pl->looper->init(rate, (size_t)kPoolMbDefault << 20)) {
     delete pl->looper;
     delete pl;
     return nullptr;
@@ -698,6 +708,7 @@ void run(LV2_Handle h, uint32_t n) {
   pl->out(O_STOPS, (float)stops);
   pl->out(O_LOCKS, (float)locks);
   pl->out(O_GRID, (float)n_grid);
+  pl->out(O_POOL_MB, (float)(lp->pool_bytes() >> 20));
   pl->out(O_POOL, lp->pool_fill());
   pl->out(O_MPK_L, lp->master_peak(0));
   pl->out(O_MPK_R, lp->master_peak(1));

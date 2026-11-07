@@ -135,10 +135,13 @@ LAT_STEPS = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 80, 100
 HOLD_STEPS = [200, 300, 400, 500, 600, 750, 1000, 1250, 1500, 2000]
 RHOLD_STEPS = [500, 750, 1000, 1250, 1500, 2000, 2500, 3000]
 # Экран настроек: разделы, в разделе строки.
-#   ("seg", символ, подпись, названия вариантов) — сегментный переключатель, значение = номер варианта
+#   ("seg", символ, подпись, названия вариантов[, значения]) — сегментный переключатель;
+#      значение = номер варианта или значение из списка
 #   ("sl", символ, подпись, список значений, как показать) — ползунок по шагам списка
 GRID_NAMES = ("2\u00d72", "4\u00d74", "6\u00d76")
-GRID_CONFIRM_S = 3.0    # смена сетки при записанных лупах: второе касание в течение 3 с
+GRID_CONFIRM_S = 3.0    # смена сетки или пула при записанных лупах: второе касание в течение 3 с
+CONFIRM_SYMS = ("grid", "pool_mb")   # эти настройки стирают лупы
+POOL_MB = [256, 512, 1024, 2048, 4096]
 SETTINGS = [
     ("GRID", [
         ("seg", "grid", "PARTS \u00d7 TRACKS", GRID_NAMES),
@@ -173,12 +176,16 @@ SETTINGS = [
     ("OUTPUT", [
         ("seg", "limiter", "LIMITER", ("OFF", "ON")),
     ]),
+    ("MEMORY", [
+        ("seg", "pool_mb", "POOL", ("256M", "512M", "1G", "2G", "4G"), POOL_MB),
+    ]),
 ]
 SCROLL_START_PX = 8     # палец ушёл по вертикали дальше — это прокрутка, а не касание
 SETTING_DEFAULTS = {"rec_order": 0, "mode": 1, "mute_q": 2, "part_q": 3, "tempo_glide": 500, "spd_snap": 0,
                     "spd_glide": 150, "fade_out": 200, "fade_in": 200, "rev_time": 50,
                     "len1": 0, "len2": 0, "len3": 0, "len4": 0, "len5": 0, "len6": 0, "limiter": 1, "grid": 1,
-                    "latency": 0, "bpb": 4, "hold_ms": 500, "reset_ms": 1000}
+                    "latency": 0, "bpb": 4, "hold_ms": 500, "reset_ms": 1000,
+                    "pool_mb": 2048}
 
 
 def mix(c1, c2, f):
@@ -232,7 +239,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         self.mm = None
         self.mm_path = None
         self.peaks = [None] * PK_TRACKS  # кэш пиков по дорожкам
-        self.grid_confirm = None  # (вариант сетки, до какого времени ждём второго касания)
+        self.grid_confirm = None  # (символ, вариант, до какого времени ждём второго касания)
         self.geo = {}            # кэш многоугольников волн
         self.mon_t = 0.0         # когда пришли значения портов (между ними позиция досчитывается)
         self.flash_bar = None
@@ -363,19 +370,19 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         if v != self._zval(sym):
             self._zset(sym, v)
 
-    def _tap_grid(self, k):
-        """Смена сетки стирает все лупы: если они есть, нужно второе касание в течение 3 с."""
+    def _tap_confirm(self, sym, k, value):
+        """Смена сетки или пула стирает все лупы: если они есть, нужно второе касание в течение 3 с."""
         now = time.monotonic()
-        if k == self._zval("grid"):
+        if value == self._zval(sym):
             self.grid_confirm = None
             return
         loops = int((self.monitors or {}).get("o_parts", 0)) != 0
         gc = self.grid_confirm
-        if not loops or (gc and gc[0] == k and now < gc[1]):
-            self._zset("grid", k)
+        if not loops or (gc and gc[0] == sym and gc[1] == k and now < gc[2]):
+            self._zset(sym, value)
             self.grid_confirm = None
         else:
-            self.grid_confirm = (k, now + GRID_CONFIRM_S)
+            self.grid_confirm = (sym, k, now + GRID_CONFIRM_S)
 
     def _on_motion(self, event):
         d = self.sdrag
@@ -401,10 +408,10 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         self.drag = None
         d, self.sdrag = self.sdrag, None
         if d and d["mode"] is None and event is not None:  # простое касание
-            if d["what"] == "sseg" and d["arg"][0] == "grid":
-                self._tap_grid(d["arg"][1])
+            if d["what"] == "sseg" and d["arg"][0] in CONFIRM_SYMS:
+                self._tap_confirm(*d["arg"])
             elif d["what"] == "sseg":
-                self._zset(d["arg"][0], d["arg"][1])
+                self._zset(d["arg"][0], d["arg"][2])
             elif d["what"] == "ssl":
                 self._slide(d["arg"], event.x)
             self.refresh_gui()
@@ -1098,7 +1105,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
 
         y = y0 - self.s_scroll
         now = time.monotonic()
-        confirm = self.grid_confirm if self.grid_confirm and now < self.grid_confirm[1] else None
+        confirm = self.grid_confirm if self.grid_confirm and now < self.grid_confirm[2] else None
         for title, items in sections:
             if y + hdr > y0 and y < y1:
                 ty = y + hdr * 0.58
@@ -1122,10 +1129,18 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                 if v != SETTING_DEFAULTS.get(sym, v):  # отличается от значения по умолчанию
                     r = max(2, rh * 0.07)
                     c.create_oval(x0 + pad - r, cy - r, x0 + pad + r, cy + r, fill=GREEN, width=0)
+                if sym == "pool_mb":  # рядом с подписью — заполнение пула или «меняется»
+                    mm = self.monitors or {}
+                    if mm.get("o_pool_mb") is not None and int(mm.get("o_pool_mb", 0)) == 0:
+                        label = "POOL ..."
+                    else:
+                        label = "POOL %d%%" % int(round(100 * float(mm.get("o_pool", 0.0))))
                 if full:
                     self._text(lab_x, cy, label, cx0 - lab_x - pad, ih * 0.62, "#d8d8d8", "w")
                 if kind == "seg":
                     names = item[3]
+                    vals = item[4] if len(item) > 4 else list(range(len(names)))
+                    v = min(range(len(vals)), key=lambda q: abs(vals[q] - v))  # номер выбранного варианта
                     n = len(names)
                     sg = 3
                     sw = (cx1 - cx0 - sg * (n - 1)) / n
@@ -1133,13 +1148,13 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                         sx = cx0 + k * (sw + sg)
                         on = k == v
                         fill, edge, tcol = (mix(GREEN, BG, 0.5), GREEN, TEXT) if on else ("#161616", "#2a2a2a", "#8a8a8a")
-                        if sym == "grid" and confirm and confirm[0] == k:  # ждёт второго касания: стереть всё
+                        if confirm and confirm[0] == sym and confirm[1] == k:  # ждёт второго касания: стереть всё
                             fill = RED if int(now * 4) % 2 == 0 else mix(RED, BG, 0.5)
                             edge, tcol, name = RED, TEXT, "CLEAR ALL?"
                         c.create_rectangle(sx, cy - ih / 2, sx + sw, cy + ih / 2, fill=fill, outline=edge, width=1)
                         if full:
                             self._text(sx + sw / 2, cy, name, sw * 0.88, ih * 0.6, tcol)
-                        hit(sx, ry0, sx + sw, ry1, "sseg", (sym, k))
+                        hit(sx, ry0, sx + sw, ry1, "sseg", (sym, k, vals[k]))
                 else:
                     values, fmt = item[3], item[4]
                     n = len(values)
@@ -1190,7 +1205,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         if self.speed_slot is not None:
             items = [("SPEED", TEXT), ("TRACK %d" % (self.speed_slot + 1), GREEN), ("CLOSE", GREEN)]
         elif self.settings_open:
-            if self.grid_confirm and now < self.grid_confirm[1]:
+            if self.grid_confirm and now < self.grid_confirm[2]:
                 mid_item = ("TAP AGAIN TO CLEAR", RED)
             else:
                 mid_item = ("SWIPE \u2195 TO SCROLL" if self.s_max > 0 else "TAP TO CHANGE", DIM)

@@ -71,9 +71,10 @@ struct TrackView {
 };
 
 // Задание рабочему потоку: dst = src ± layer (подготовка undo/redo).
-// Или (op 3) пересчитать пики дорожки для волн виджета.
+// Или (op 3) пересчитать пики дорожки для волн виджета, (op 4) заменить пул памяти: старый
+// освободить, выделить новый размером len байт.
 struct WorkMsg {
-  uint8_t op;  // 1 вычесть слой (undo), 2 прибавить (redo), 3 пики
+  uint8_t op;  // 1 вычесть слой (undo), 2 прибавить (redo), 3 пики, 4 новый пул
   uint8_t track;
   uint8_t nl;  // op 3: слоёв в lay[]
   uint8_t slot;  // op 3: место дорожки в парте (куда в общей памяти писать пики)
@@ -94,6 +95,12 @@ class Looper {
   // Не RT. pool_bytes — размер пула (по ТЗ 2 ГБ).
   bool init(double sample_rate, size_t pool_bytes);
   bool ok() const { return pool_.ok(); }
+
+  // RT: новый размер пула. Лупы стираются (плавно), запись не начинается, пока новый пул не готов:
+  // старый пул уходит рабочему потоку, тот его освобождает и выделяет новый (не больше памяти сразу).
+  void set_pool_size(size_t bytes);
+  size_t pool_bytes() const { return pool_state_ == PS_IDLE ? pool_.bytes() : 0; }  // 0 — меняется
+  bool pool_changing() const { return pool_state_ != PS_IDLE; }
 
   // RT
   void set_settings(const Settings& s) { set_ = s; }
@@ -153,6 +160,9 @@ class Looper {
 
  private:
   enum : uint8_t { U_DELTA = 1, U_SNAP = 2 };
+  // смена пула: запрошена -> лупы затихают -> пул у рабочего потока -> новый подключён
+  enum PoolState : uint8_t { PS_IDLE, PS_REQ, PS_DRAIN, PS_ALLOC };
+  void pool_step();
   struct Entry {
     uint8_t type;
     int32_t buf;  // DELTA: слой; SNAP: сумма, на которую переключиться (-1 = пусто)
@@ -294,6 +304,10 @@ class Looper {
   uint64_t bar_frames() const;
 
   Pool pool_;
+  Pool spare_;               // смена пула: сюда уходит старый, здесь рабочий поток выделяет новый
+  PoolState pool_state_ = PS_IDLE;
+  size_t pool_req_ = 0;
+  bool pool_msg_ = false;    // задание op 4 ещё не отдано рабочему потоку
   Settings set_;
   double sr_ = 48000.0;
   uint32_t xf_ = 480;          // внутренний кроссфейд стыка, овердаба, undo (10 мс)

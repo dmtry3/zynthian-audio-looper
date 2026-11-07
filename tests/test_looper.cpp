@@ -829,6 +829,46 @@ static void test_latency() {
   CHECK(s.max_step(2 * BAR + 2000, 3 * BAR) < 0.6f);
 }
 
+// Смена размера пула: лупы плавно затихают, пул меняется (старый освобождается раньше нового),
+// пока меняется — Rec не начинает запись; потом всё работает, микшер не трогается.
+static void test_pool_resize() {
+  Sim s;  // пул 64 МБ
+  CHECK(s.lp->pool_bytes() == (size_t)s.lp->total_chunks() * sizeof(Chunk));
+  s.in_l = sine(220.0, 0.4f);
+  s.cmd(Cmd::Rec);
+  s.run(24000);
+  s.cmd(Cmd::Rec);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(24000);
+  Mix m;
+  m.level_db = -3.0f;
+  s.lp->set_mix(0, m);
+  const uint64_t t0 = s.t;
+  s.lp->set_pool_size((size_t)128 << 20);
+  s.cmd(Cmd::TrackNext);
+  s.cmd(Cmd::Rec);  // пока пул меняется — молча ничего
+  s.run(BLOCK * 32);
+  CHECK(!s.lp->pool_changing() && s.lp->pool_bytes() >= ((size_t)127 << 20) &&
+        s.lp->pool_bytes() <= ((size_t)128 << 20));
+  CHECK(s.v(0).state == 0 && s.v(1).state == 0 && s.lp->parts_mask() == 0u);
+  CHECK(s.max_step(t0, s.t) < 0.05f);
+  CHECK(rms(s.slice(s.t - BLOCK * 4, BLOCK * 4)) < 1e-6f);
+  CHECK(s.lp->free_chunks() == s.lp->total_chunks());
+  CHECK(s.lp->mix(0).level_db == -3.0f);
+  // новый пул работает (курсор после стирания — на дорожке 1)
+  CHECK(s.lp->active() == 0);
+  s.in_l = sine(330.0, 0.3f);
+  s.cmd(Cmd::Rec);
+  s.run(24000);
+  s.cmd(Cmd::Rec);
+  s.in_l = [](uint64_t) { return 0.0f; };
+  s.run(24000);
+  CHECK(s.v(0).state == 3 && rms(s.slice(s.t - 12000, 12000)) > 0.1f);
+  // тот же размер ещё раз — ничего не происходит
+  s.lp->set_pool_size(s.lp->pool_bytes());
+  CHECK(!s.lp->pool_changing());
+}
+
 // Сетка 6×6 и 2×2: дорожки и парты по кругу в пределах сетки, Lock в пустой парт;
 // смена сетки стирает лупы плавно и освобождает память, микшер и скорости не трогает.
 static void test_grid() {
@@ -1337,6 +1377,7 @@ int main() {
   test_rec_peaks();
   test_rop_leave();
   test_latency();
+  test_pool_resize();
   test_grid();
   test_parts_lock();
   test_parts_edges();

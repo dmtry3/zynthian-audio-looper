@@ -46,6 +46,9 @@ class Pool {
   bool init(size_t bytes, uint32_t max_bufs);
   void release();
   bool ok() const { return mem_ != nullptr; }
+  size_t bytes() const { return (size_t)n_ * sizeof(Chunk); }
+  // Обменяться содержимым с другим пулом (без выделения памяти; для смены размера пула).
+  void swap(Pool& o);
 
   // ---- куски (только аудиопоток) ----
   uint32_t alloc_chunk() {

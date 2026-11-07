@@ -32,6 +32,24 @@ bool Pool::init(size_t bytes, uint32_t max_bufs) {
   return true;
 }
 
+void Pool::swap(Pool& o) {
+  Pool* a = this;
+  auto sw = [](auto& x, auto& y) {
+    auto t = x;
+    x = y;
+    y = t;
+  };
+  sw(a->mem_, o.mem_);
+  sw(a->n_, o.n_);
+  sw(a->stack_, o.stack_);
+  sw(a->ref_, o.ref_);
+  sw(a->top_, o.top_);
+  sw(a->bufs_, o.bufs_);
+  sw(a->bstack_, o.bstack_);
+  sw(a->nbufs_, o.nbufs_);
+  sw(a->btop_, o.btop_);
+}
+
 void Pool::release() {
   std::free(mem_);
   delete[] stack_;
