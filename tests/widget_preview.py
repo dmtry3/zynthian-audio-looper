@@ -63,7 +63,7 @@ class Engine:
                   "o_tsrc": 1.0, "o_clk_bpm": 0.0, "o_pos_cnt": 1.0, "o_action": 0.0,
                   "o_act_cnt": 0.0, "o_held": 0.0, "o_track": 0.0, "o_part": 0.0,
                   "o_pend": -1.0, "o_widget": 0.0, "o_flags": 0.0, "o_pool": 0.0, "o_parts": 0.0}
-        for i in range(1, 5):
+        for i in range(1, 7):
             self.m["o_st%d" % i] = 0.0
             self.m["o_pos%d" % i] = 0.0
             self.m["o_len%d" % i] = 0.0
@@ -89,26 +89,27 @@ class Processor:
         self.id = 1
         # настройки — LV2-параметры плагина (как в lv2/audio_looper.ttl)
         self.controllers_dict = {
+            "grid": Ctrl("grid", 1, 0, 2),
             "rec_order": Ctrl("rec_order", 0, 0, 1), "mode": Ctrl("mode", 1, 0, 1),
             "fade_out": Ctrl("fade_out", 200, 10, 4000), "fade_in": Ctrl("fade_in", 200, 10, 4000),
             "rev_time": Ctrl("rev_time", 50, 5, 1000), "mute_q": Ctrl("mute_q", 2, 0, 3),
             "part_q": Ctrl("part_q", 3, 0, 3),
         }
-        for i in range(1, 5):
+        for i in range(1, 7):
             self.controllers_dict["len%d" % i] = Ctrl("len%d" % i, 0, 0, 16)
         # микшер (LV2-параметры): 16 дорожек, Dry, Master, ограничитель, команда mute
-        for i in range(1, 17):
+        for i in range(1, 37):
             self.controllers_dict["lev%d" % i] = Ctrl("lev%d" % i, 0.0, -60.0, 6.0)
             self.controllers_dict["pan%d" % i] = Ctrl("pan%d" % i, 0, -100, 100)
             self.controllers_dict["chm%d" % i] = Ctrl("chm%d" % i, 0, 0, 2)
         self.controllers_dict["dry"] = Ctrl("dry", 0.0, -60.0, 6.0)
         self.controllers_dict["mst_db"] = Ctrl("mst_db", 0.0, -60.0, 6.0)
         self.controllers_dict["limiter"] = Ctrl("limiter", 1, 0, 1)
-        self.controllers_dict["tmute"] = Ctrl("tmute", 0, 0, 4)
+        self.controllers_dict["tmute"] = Ctrl("tmute", 0, 0, 6)
         # скорость (этап 5)
-        for i in range(1, 17):
+        for i in range(1, 37):
             self.controllers_dict["spd%d" % i] = Ctrl("spd%d" % i, 1.0, 0.25, 2.0)
-        self.controllers_dict["sreset"] = Ctrl("sreset", 0, 0, 4)
+        self.controllers_dict["sreset"] = Ctrl("sreset", 0, 0, 6)
         self.controllers_dict["spd_snap"] = Ctrl("spd_snap", 0, 0, 2)
         self.controllers_dict["spd_glide"] = Ctrl("spd_glide", 150, 0, 2000)
         self.controllers_dict["tempo_glide"] = Ctrl("tempo_glide", 500, 100, 4000)
@@ -135,8 +136,8 @@ def write_fake_peaks(path):
     import struct as st
     cols, nlay = 512, 8
     track = 24 + 4 * nlay + 2 * cols * (3 + nlay)
-    buf = bytearray(16 + 4 * track)
-    st.pack_into("<4I", buf, 0, 0x32504C41, cols, 4, nlay)
+    buf = bytearray(16 + 6 * track)
+    st.pack_into("<4I", buf, 0, 0x33504C41, cols, 6, nlay)
 
     def wave(f, amp, a=0, b=cols, phase=0.0):
         mn, mx = [0] * cols, [0] * cols
@@ -339,7 +340,22 @@ def main():
     def shit(kind, sym, k=None):
         return [hh for hh in wdg.hits if hh[4] == kind and hh[5][0] == sym and (k is None or hh[5][1] == k)]
 
+    def into_view(kind, sym):
+        """Прокрутить настройки, пока строка не видна целиком."""
+        wdg.s_scroll = 0.0
+        wdg.update()
+        while True:
+            hs = shit(kind, sym)
+            body = [hh for hh in wdg.hits if hh[4] == "sbody"][0]
+            if hs and hs[0][1] > body[1] + 1 and hs[0][3] < body[3] - 1:  # строка целиком на экране
+                return
+            if wdg.s_scroll >= wdg.s_max:
+                return
+            wdg.s_scroll = min(wdg.s_max, wdg.s_scroll + 15)
+            wdg.update()
+
     def tap_seg(sym, k):
+        into_view("sseg", sym)
         h_ = shit("sseg", sym, k)[0]
         e = ev((h_[0] + h_[2]) / 2, (h_[1] + h_[3]) / 2)
         wdg._on_press(e)
@@ -347,6 +363,7 @@ def main():
 
     def slide_to(sym, value):
         """Тап по ползунку там, где стоит нужный шаг."""
+        into_view("ssl", sym)
         h_ = shit("ssl", sym)[0]
         _, values, tx0, tx1 = h_[5]
         x = tx0 + (tx1 - tx0) * values.index(value) / (len(values) - 1)
@@ -370,6 +387,7 @@ def main():
     slide_to("fade_out", 300)
     check("FADE OUT 200 -> 300 ms", cd["fade_out"].value == 300 and "300 ms" in texts(wdg))
     # ползунок тянется пальцем
+    into_view("ssl", "fade_in")
     h_ = shit("ssl", "fade_in")[0]
     _, values, tx0, tx1 = h_[5]
     cy = (h_[1] + h_[3]) / 2
@@ -380,8 +398,10 @@ def main():
     check("FADE IN тянется до 4 s", cd["fade_in"].value == 4000)
     check("всё не влезает: есть прокрутка", wdg.s_max > 0)
     w0 = cd["fade_out"].value
-    scroll(-wdg.height)
-    scroll(-wdg.height)  # палец дважды вверх: до конца списка
+    wdg.s_scroll = 0.0
+    wdg.update()
+    for _ in range(4):  # палец несколько раз вверх: до конца списка
+        scroll(-wdg.height)
     check("прокрутка до конца", abs(wdg.s_scroll - wdg.s_max) < 1)
     check("внизу видны LIMITER и TRACK 4", "LIMITER" in texts(wdg) and "TRACK 4" in texts(wdg))
     check("прокрутка не трогает ползунки", cd["fade_out"].value == w0)
@@ -391,8 +411,8 @@ def main():
     tap_seg("limiter", 0)
     check("LIMITER OFF", cd["limiter"].value == 0)
     tap_seg("limiter", 1)
-    scroll(wdg.height)
-    scroll(wdg.height)
+    for _ in range(4):
+        scroll(wdg.height)
     check("прокрутка обратно наверх", wdg.s_scroll == 0)
     m["o_widget"] = 1.0
     wdg.update()
@@ -471,6 +491,72 @@ def main():
     tap("sclose", None)
     check("CLOSE закрывает Speed", wdg.speed_slot is None)
 
+    # сетка: в настройках 2×2 / 4×4 / 6×6, при записанных лупах — второе касание
+    m["o_widget"], m["o_parts"] = 0.0, 1.0
+    wdg.speed_slot = None
+    wdg.settings_open = True
+    wdg.update()
+    check("в настройках есть GRID", all(t in texts(wdg) for t in ("2\u00d72", "4\u00d74", "6\u00d76")))
+    tap_seg("grid", 2)
+    check("лупы есть: первое касание только спрашивает", cd["grid"].value == 1 and "CLEAR ALL?" in texts(wdg))
+    check("внизу предупреждение", "TAP AGAIN TO CLEAR" in texts(wdg))
+    no_overlap("800x480, подтверждение сетки")
+    tap_seg("grid", 2)
+    check("второе касание: 6×6", cd["grid"].value == 2)
+    tap_seg("grid", 0)
+    wdg.grid_confirm = (0, time.monotonic() - 1)  # три секунды прошли
+    tap_seg("grid", 0)
+    check("подтверждение истекло: снова только спрашивает", cd["grid"].value == 2)
+    m["o_parts"] = 0.0
+    tap_seg("grid", 1)
+    check("лупов нет: сразу", cd["grid"].value == 1)
+    # плагин в 6×6: 6 строк, длины 6 дорожек, флаги масками
+    m["o_grid"], m["o_part"], m["o_track"] = 6.0, 5.0, 5.0
+    m["o_mutes"], m["o_revs"], m["o_stops"], m["o_locks"] = 1.0 * (1 << 4), 1.0 * (1 << 5), 0.0, 1.0
+    m["o_st5"], m["o_len5"], m["o_pos5"], m["o_st6"], m["o_len6"], m["o_pos6"] = 3.0, 4.0, 0.2, 3.0, 4.0, 0.7
+    wdg.settings_open = True
+    wdg.s_scroll = 1e9
+    wdg.update()
+    check("в 6×6 в настройках длина дорожки 6", "TRACK 6" in texts(wdg))
+    wdg.settings_open = False
+    wdg.update()
+    nums = [t for t in texts(wdg) if t in ("1", "2", "3", "4", "5", "6")]
+    check("в 6×6 на Loop шесть дорожек", nums == ["1", "2", "3", "4", "5", "6"])
+    fills = [wdg.widget_canvas.itemcget(i, "fill") for i in wdg.widget_canvas.find_all()]
+    check("6×6: mute дорожки 5 серый, reverse дорожки 6 фиолетовый", mod.GRAY in fills and mod.PURPLE in fills)
+    check("6×6: подписи парта и дорожки", "PART 6" in texts(wdg) and "TRACK 6" in texts(wdg))
+    no_overlap("800x480, Loop 6×6")
+    m["o_widget"] = 1.0
+    wdg.update()
+    check("в 6×6 на Mixer шесть кнопок M", texts(wdg).count("M") == 6)
+    no_overlap("800x480, Mixer 6×6")
+    tap("fader", "lev36", fy=0.95)
+    check("фейдер дорожки 6 парта 6 — lev36", cd["lev36"].value < -20.0)
+    tap("mute", 6)
+    check("M дорожки 6 — tmute=6", cd["tmute"].value == 6)
+    m["o_widget"] = 0.0
+    wdg.update()
+    tap("speed", 5)
+    check("Speed дорожки 6 парта 6 — spd36", wdg.speed_slot == 5 and hit("sslider", "spd36"))
+    wdg.speed_slot = None
+    # 2×2: две строки, значки не раздуваются
+    m["o_grid"], m["o_part"], m["o_track"] = 2.0, 1.0, 1.0
+    wdg.update()
+    nums = [t for t in texts(wdg) if t in ("1", "2", "3", "4", "5", "6")]
+    check("в 2×2 на Loop две дорожки", nums == ["1", "2"])
+    no_overlap("800x480, Loop 2×2")
+    m["o_widget"] = 1.0
+    wdg.update()
+    check("в 2×2 на Mixer две кнопки M", texts(wdg).count("M") == 2)
+    no_overlap("800x480, Mixer 2×2")
+    tap("pan", "pan4", fx=0.1)
+    check("панорама дорожки 2 парта 2 — pan4", cd["pan4"].value < -60)
+    m["o_widget"], m["o_grid"], m["o_part"], m["o_track"] = 0.0, 4.0, 0.0, 0.0
+    for k in ("o_mutes", "o_revs", "o_stops", "o_locks"):
+        del m[k]
+    wdg.settings_open = False
+    wdg.update()
+
     # виджет в Zynthian занимает только часть экрана: проверяем и маленькие размеры
     m["o_bpm"], m["o_bar"], m["o_bpb"] = 133.5, 127.0, 7.0
     for size in ("640x360", "480x272", "360x220"):
@@ -491,6 +577,15 @@ def main():
         m["o_widget"] = 1.0
         wdg.update()
         no_overlap(size + ", Mixer")
+        for g in (6.0, 2.0):
+            m["o_grid"] = g
+            wdg.update()
+            no_overlap("%s, Mixer %d×%d" % (size, g, g))
+            m["o_widget"] = 0.0
+            wdg.update()
+            no_overlap("%s, Loop %d×%d" % (size, g, g))
+            m["o_widget"] = 1.0
+        m["o_grid"] = 4.0
         m["o_widget"] = 0.0
         wdg.speed_slot = 0
         wdg.update()

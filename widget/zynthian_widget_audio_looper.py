@@ -58,7 +58,8 @@ ACTIONS = [
     ("MIXER", TEXT),
 ]
 # Пики волн: общая память с плагином, раскладка как PeakShm в core/peaks.h
-PK_MAGIC = 0x32504C41                   # "ALP2": с волной записи
+PK_MAGIC = 0x33504C41                   # "ALP3": 6 дорожек, с волной записи
+PK_TRACKS = 6
 PK_COLS = 512
 PK_LAYERS = 8
 PK_HDR = 16
@@ -134,7 +135,12 @@ QUANT_NAMES = ("NOW", "BEAT", "BAR", "LOOP END")
 # Экран настроек: разделы, в разделе строки.
 #   ("seg", символ, подпись, названия вариантов) — сегментный переключатель, значение = номер варианта
 #   ("sl", символ, подпись, список значений, как показать) — ползунок по шагам списка
+GRID_NAMES = ("2\u00d72", "4\u00d74", "6\u00d76")
+GRID_CONFIRM_S = 3.0    # смена сетки при записанных лупах: второе касание в течение 3 с
 SETTINGS = [
+    ("GRID", [
+        ("seg", "grid", "PARTS \u00d7 TRACKS", GRID_NAMES),
+    ]),
     ("RECORDING", [
         ("seg", "rec_order", "REC ORDER", ("RPO", "ROP")),
         ("seg", "mode", "MODE", ("FREE", "QUANTIZE")),
@@ -154,7 +160,7 @@ SETTINGS = [
         ("sl", "spd_glide", "SPEED GLIDE", GLIDE_STEPS, lambda v: "OFF" if v == 0 else _ms(v)),
     ]),
     ("TRACK LENGTH", [
-        ("sl", "len%d" % k, "TRACK %d" % k, list(range(17)), _len) for k in range(1, 5)
+        ("sl", "len%d" % k, "TRACK %d" % k, list(range(17)), _len) for k in range(1, 7)
     ]),
     ("OUTPUT", [
         ("seg", "limiter", "LIMITER", ("OFF", "ON")),
@@ -163,7 +169,7 @@ SETTINGS = [
 SCROLL_START_PX = 8     # палец ушёл по вертикали дальше — это прокрутка, а не касание
 SETTING_DEFAULTS = {"rec_order": 0, "mode": 1, "mute_q": 2, "part_q": 3, "tempo_glide": 500, "spd_snap": 0,
                     "spd_glide": 150, "fade_out": 200, "fade_in": 200, "rev_time": 50,
-                    "len1": 0, "len2": 0, "len3": 0, "len4": 0, "limiter": 1}
+                    "len1": 0, "len2": 0, "len3": 0, "len4": 0, "len5": 0, "len6": 0, "limiter": 1, "grid": 1}
 
 
 def mix(c1, c2, f):
@@ -216,7 +222,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         self.hits = []          # (x0, y0, x1, y1, действие, аргумент) для касаний
         self.mm = None
         self.mm_path = None
-        self.peaks = [None] * 4  # кэш пиков по дорожкам
+        self.peaks = [None] * PK_TRACKS  # кэш пиков по дорожкам
+        self.grid_confirm = None  # (вариант сетки, до какого времени ждём второго касания)
         self.geo = {}            # кэш многоугольников волн
         self.mon_t = 0.0         # когда пришли значения портов (между ними позиция досчитывается)
         self.flash_bar = None
@@ -347,6 +354,20 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         if v != self._zval(sym):
             self._zset(sym, v)
 
+    def _tap_grid(self, k):
+        """Смена сетки стирает все лупы: если они есть, нужно второе касание в течение 3 с."""
+        now = time.monotonic()
+        if k == self._zval("grid"):
+            self.grid_confirm = None
+            return
+        loops = int((self.monitors or {}).get("o_parts", 0)) != 0
+        gc = self.grid_confirm
+        if not loops or (gc and gc[0] == k and now < gc[1]):
+            self._zset("grid", k)
+            self.grid_confirm = None
+        else:
+            self.grid_confirm = (k, now + GRID_CONFIRM_S)
+
     def _on_motion(self, event):
         d = self.sdrag
         if d:
@@ -371,7 +392,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         self.drag = None
         d, self.sdrag = self.sdrag, None
         if d and d["mode"] is None and event is not None:  # простое касание
-            if d["what"] == "sseg":
+            if d["what"] == "sseg" and d["arg"][0] == "grid":
+                self._tap_grid(d["arg"][1])
+            elif d["what"] == "sseg":
                 self._zset(d["arg"][0], d["arg"][1])
             elif d["what"] == "ssl":
                 self._slide(d["arg"], event.x)
@@ -506,6 +529,14 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         dt = min(0.5, max(0.0, now - self.mon_t)) if self.mon_t else 0.0
 
         flags = int(m.get("o_flags", 0))
+        n = int(round(m.get("o_grid", 4)))
+        if n not in (2, 4, 6):
+            n = 4
+
+        def mask(key, shift):  # флаги дорожек: маски плагина, у старого плагина — упакованный o_flags
+            v = m.get(key)
+            return int(v) if v is not None else (flags >> shift) & 15
+        mutes, revs, stops, locks = mask("o_mutes", 0), mask("o_revs", 4), mask("o_stops", 16), mask("o_locks", 20)
         st = {
             "bpm": float(m.get("o_bpm", 0.0)),
             "bpb": max(1, min(16, int(round(m.get("o_bpb", 4))))),
@@ -514,8 +545,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             "src": int(m.get("o_tsrc", 0)),
             "act": int(m.get("o_action", 0)),
             "cnt": int(m.get("o_act_cnt", 0)),
-            "track": int(m.get("o_track", 0)) % 4,
-            "part": int(m.get("o_part", 0)) % 4,
+            "track": int(m.get("o_track", 0)) % n,
+            "part": int(m.get("o_part", 0)) % n,
+            "n": n,
             "pend": int(m.get("o_pend", -1)),
             "parts": int(m.get("o_parts", 0)),
             "rec_next": bool(flags >> 24 & 1),
@@ -524,15 +556,15 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             "rop": self._zval("rec_order") == 1,
             "tracks": [],
         }
-        for i in range(4):
+        for i in range(n):
             st["tracks"].append({
                 "state": int(m.get("o_st%d" % (i + 1), 0)),
                 "pos": float(m.get("o_pos%d" % (i + 1), 0.0)),
                 "len": float(m.get("o_len%d" % (i + 1), 0.0)),
-                "muted": bool(flags >> i & 1),
-                "reversed": bool(flags >> (4 + i) & 1),
-                "stopped": bool(flags >> (16 + i) & 1),
-                "locked": bool(flags >> (20 + i) & 1),
+                "muted": bool(mutes >> i & 1),
+                "reversed": bool(revs >> i & 1),
+                "stopped": bool(stops >> i & 1),
+                "locked": bool(locks >> i & 1),
                 "speed": float(m.get("o_spd%d" % (i + 1), 1.0)),
                 "espeed": float(m.get("o_espd%d" % (i + 1), 1.0)),
             })
@@ -567,6 +599,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         tab_h = int(min(max(h * 0.11, 16), 40))
         gap = max(2, int(h * 0.012))
         body = (0, top_h + gap, w, h - tab_h - gap)
+        self.cur_n = st["n"]
+        if self.speed_slot is not None and self.speed_slot >= st["n"]:
+            self.speed_slot = None
         if self.speed_slot is None and self.settings_open:
             # настройки прокручиваются: строки за краем закрываются полосой темпа и вкладками
             self._settings(*body)
@@ -627,20 +662,22 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
     def _loop(self, st, x0, y0, x1, y1):
         c = self.widget_canvas
         w = x1 - x0
-        row_h = (y1 - y0) / 4.0
-        part_w = row_h * 0.5
+        n = st["n"]
+        row_h = (y1 - y0) / float(n)
+        u = min(row_h, (y1 - y0) / 4.0)   # размер значков: в 2×2 строки высокие, значки как в 4×4
+        part_w = u * 0.5
         master_w = max(34, w * 0.085)
         wx1 = x1 - master_w - 4
         blink = int(time.monotonic() * 3) % 2 == 0
         beats_per_s = st["bpm"] / 60.0 if st["bpm"] > 0 else 2.0
-        for i in range(4):
+        for i in range(n):
             tr = st["tracks"][i]
             ry0, ry1 = y0 + i * row_h, y0 + (i + 1) * row_h
             cy = (ry0 + ry1) / 2
             # точка парта (строка i = парт i), как столбик точек у Aeros:
             # пустой — контур, записанный — заливка, текущий — зелёный, ожидающий — мигает
             px = x0 + part_w / 2
-            pr = row_h * 0.11
+            pr = u * 0.11
             recorded = bool(st["parts"] >> i & 1)
             current, pending = i == st["part"], i == st["pend"]
             col = GREEN if (current or pending) else ("#b0b0b0" if recorded else DIM)
@@ -659,23 +696,23 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                 color = mix(color, BG, 0.55)  # транспорт стоит: дорожка затихла и ждёт пуска
             has_loop = state in (ST_PLAY, ST_DUB) and tr["len"] > 0
             # круг позиции с номером, под ним скорость
-            pie_r = row_h * 0.3
-            pcx, pcy = x0 + part_w + row_h * 0.42, ry0 + row_h * 0.4
+            pie_r = u * 0.3
+            pcx, pcy = x0 + part_w + u * 0.42, cy - u * 0.1
             frac = tr["pos"] if has_loop else (1.0 if state == ST_REC else 0.0)
             self._pie(pcx, pcy, pie_r, color, frac, empty=not (has_loop or state == ST_REC))
             num_col = TEXT if (has_loop or state == ST_REC) else (GREEN if active else DIM)
             self._text(pcx, pcy, str(i + 1), pie_r * 1.3, pie_r * 1.3, num_col)
             if tr["locked"]:
-                self._lock_icon(pcx + pie_r * 1.05, ry0 + row_h * 0.26, row_h * 0.11)
+                self._lock_icon(pcx + pie_r * 1.05, cy - u * 0.24, u * 0.11)
             sp = tr["speed"]
-            self._text(pcx, ry0 + row_h * 0.87, "%.2f×" % sp, row_h * 0.8, row_h * 0.22,
+            self._text(pcx, cy + u * 0.37, "%.2f×" % sp, u * 0.8, u * 0.22,
                        ORANGE if abs(sp - 1.0) > 1e-3 else DIM, bold=abs(sp - 1.0) > 1e-3)
-            self.hits.append((x0 + part_w, ry0 + row_h * 0.72, x0 + part_w + row_h * 0.85, ry1, "speed", i))
+            self.hits.append((x0 + part_w, cy + u * 0.22, x0 + part_w + u * 0.85, cy + u * 0.5, "speed", i))
             # волна цикла: сумма цветом дорожки (сыгранное ярче), слои овердабов полупрозрачно поверх
-            wx0 = x0 + part_w + row_h * 0.9
+            wx0 = x0 + part_w + u * 0.9
             bw = wx1 - wx0
             if state == ST_REC:
-                self._rec_wave(st, i, wx0, wx1, cy, row_h, color)
+                self._rec_wave(st, i, wx0, wx1, cy, row_h, color, u)
             if has_loop:
                 self._waves(i, wx0, wx1, cy, row_h * 0.42, color, tr["pos"], tr["reversed"])
             if has_loop:
@@ -720,11 +757,11 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                 self.mm.close()
             with open(path, "rb") as f:
                 mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-            if len(mm) < PK_HDR + 4 * PK_TRACK or struct.unpack_from("<I", mm, 0)[0] != PK_MAGIC:
+            if len(mm) < PK_HDR + PK_TRACKS * PK_TRACK or struct.unpack_from("<I", mm, 0)[0] != PK_MAGIC:
                 mm.close()
                 return None
             self.mm, self.mm_path = mm, path
-            self.peaks = [None] * 4
+            self.peaks = [None] * PK_TRACKS
             return mm
         except Exception:
             self.mm = None
@@ -788,7 +825,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             botrev += bot[2 * j:2 * j + 2]
         return top, botrev, npts
 
-    def _rec_wave(self, st, i, x0, x1, cy, row_h, color):
+    def _rec_wave(self, st, i, x0, x1, cy, row_h, color, u):
         """Запись основы: волна растёт слева направо, черты тактов, счёт тактов.
         Фиксированная длина — вся полоса и есть цикл; свободная — полоса заполняется,
         потом колонки сливаются вдвое (это делает ядро) и волна сжимается к левой половине."""
@@ -832,7 +869,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             xe = x0 + bw * n / PK_COLS
             c.create_line(xe, cy - hh, xe, cy + hh, fill=TEXT, width=2)       # голова записи
         txt = bars_txt or "REC %.1f s" % tr["len"]
-        self._text(x1 - 6, cy - hh * 0.62, txt, bw * 0.3, row_h * 0.26, TEXT, "e")
+        self._text(x1 - 6, cy - hh * 0.62, txt, bw * 0.3, u * 0.26, TEXT, "e")
 
     def _waves(self, i, x0, x1, cy, hh, color, pos, reversed_):
         d = self._read_peaks(i)
@@ -865,18 +902,21 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                              stipple="gray50")
 
     def _mixer(self, st, x0, y0, x1, y1):
-        """Mixer по образцу Aeros: 4 дорожки играющего парта, справа Dry и Master."""
+        """Mixer по образцу Aeros: дорожки играющего парта (2, 4 или 6), справа Dry и Master."""
         c = self.widget_canvas
         m = self.monitors or {}
         w, hh = x1 - x0, y1 - y0
         side_w = max(70, w * 0.24)
-        cw = (w - side_w - 6) / 4.0
-        base = st["part"] * 4
-        for i in range(4):
+        ng = st["n"]
+        cw = (w - side_w - 6) / float(ng)
+        ew = min(cw, (w - side_w - 6) / 4.0)   # ширина ручек: в 2×2 как в 4×4, по центру полосы
+        base = st["part"] * ng
+        for i in range(ng):
             tr = st["tracks"][i]
             n = base + i + 1
             cx0 = x0 + i * cw
             mid = cx0 + cw / 2
+            ex0 = mid - ew / 2
             active = i == st["track"]
             col = track_color(tr["state"], tr["muted"], tr["reversed"], active)
             has_loop = tr["state"] in (ST_PLAY, ST_DUB)
@@ -885,14 +925,14 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             if active:
                 c.create_rectangle(cx0 + 2, y0 + 1, cx0 + cw - 2, y1 - 1, outline=FRAME, width=2)
             # круг позиции с номером
-            r = min(cw * 0.16, hh * 0.075)
+            r = min(ew * 0.16, hh * 0.075)
             self._pie(mid, y0 + r + 3, r, col, tr["pos"] if has_loop else 0.0, empty=not has_loop)
             self._text(mid, y0 + r + 3, str(i + 1), r * 1.3, r * 1.3, TEXT if has_loop else col)
             # панорама: полоса, метка центра, бегунок
             pan = self._zval("pan%d" % n)
             py0 = y0 + 2 * r + hh * 0.05
             ph = max(10, hh * 0.07)
-            px0, px1 = cx0 + cw * 0.12, cx0 + cw * 0.88
+            px0, px1 = ex0 + ew * 0.12, ex0 + ew * 0.88
             c.create_rectangle(px0, py0, px1, py0 + ph, fill="#1a1a1a", width=0)
             c.create_line((px0 + px1) / 2, py0, (px0 + px1) / 2, py0 + ph, fill=DIM)
             kx = (px0 + px1) / 2 + (px1 - px0) / 2 * pan / 100.0
@@ -901,10 +941,10 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             # кнопки: режим канала и M
             by0 = py0 + ph + hh * 0.04
             bh = max(14, hh * 0.09)
-            bw = (cw * 0.76 - 4) / 2
+            bw = (ew * 0.76 - 4) / 2
             chm = self._zval("chm%d" % n)  # 0 стерео, 1 только L, 2 только R
             split = chm in (1, 2)
-            bx = cx0 + cw * 0.12
+            bx = ex0 + ew * 0.12
             c.create_rectangle(bx, by0, bx + bw, by0 + bh, fill="#3a2a5a" if split else "#262626", width=0)
             self._text(bx + bw / 2, by0 + bh / 2, ("ST", "L", "R")[chm if split else 0], bw * 0.9, bh * 0.7,
                        PURPLE if split else "#b0b0b0")
@@ -917,8 +957,8 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             lab_h = max(10, hh * 0.07)
             fy0, fy1 = by0 + bh + hh * 0.05, y1 - lab_h - 4
             db = self._zfloat("lev%d" % n)
-            self._fader(mid, fy0, fy1, cw, db, float(m.get("o_pk%d" % (i + 1), 0.0)), None, "lev%d" % n)
-            self._text(mid, y1 - lab_h / 2 - 2, "-\u221e" if db <= MIN_DB else "%+.1f" % db, cw * 0.8, lab_h, DIM,
+            self._fader(mid, fy0, fy1, ew, db, float(m.get("o_pk%d" % (i + 1), 0.0)), None, "lev%d" % n)
+            self._text(mid, y1 - lab_h / 2 - 2, "-\u221e" if db <= MIN_DB else "%+.1f" % db, ew * 0.8, lab_h, DIM,
                        bold=False)
         # справа: Dry и Master
         sx0 = x1 - side_w
@@ -972,7 +1012,7 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         """Скорость дорожки как у ленты: крупное значение, слайдер 0,25–2× с полутонами, 1×, привязка, ход."""
         c = self.widget_canvas
         slot = self.speed_slot
-        n = st["part"] * 4 + slot + 1
+        n = st["part"] * st["n"] + slot + 1
         sym = "spd%d" % n
         snap = self._zval("spd_snap")
         sp = speed_snap(self._zfloat(sym, 1.0), snap)
@@ -1035,7 +1075,11 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         lab_x = x0 + pad + rh * 0.22
         cx0 = x0 + pad + w * 0.30                   # начало переключателя или ползунка
         cx1 = x1 - pad - sb_w - 4
-        total = sum(hdr + len(items) * rh for _, items in SETTINGS) + rh * 0.3
+        n = getattr(self, "cur_n", 4)
+        # длины — только дорожкам текущей сетки
+        sections = [(title, [it for it in items if not (it[1].startswith("len") and int(it[1][3:]) > n)])
+                    for title, items in SETTINGS]
+        total = sum(hdr + len(items) * rh for _, items in sections) + rh * 0.3
         self.s_max = max(0.0, total - vh)
         self.s_scroll = max(0.0, min(self.s_max, self.s_scroll))
 
@@ -1048,7 +1092,9 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                 self.hits.append((hx0, hy0, hx1, hy1, what, arg))
 
         y = y0 - self.s_scroll
-        for title, items in SETTINGS:
+        now = time.monotonic()
+        confirm = self.grid_confirm if self.grid_confirm and now < self.grid_confirm[1] else None
+        for title, items in sections:
             if y + hdr > y0 and y < y1:
                 ty = y + hdr * 0.58
                 if visible(y, y + hdr):
@@ -1081,11 +1127,13 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                     for k, name in enumerate(names):
                         sx = cx0 + k * (sw + sg)
                         on = k == v
-                        c.create_rectangle(sx, cy - ih / 2, sx + sw, cy + ih / 2,
-                                           fill=mix(GREEN, BG, 0.5) if on else "#161616",
-                                           outline=GREEN if on else "#2a2a2a", width=1)
+                        fill, edge, tcol = (mix(GREEN, BG, 0.5), GREEN, TEXT) if on else ("#161616", "#2a2a2a", "#8a8a8a")
+                        if sym == "grid" and confirm and confirm[0] == k:  # ждёт второго касания: стереть всё
+                            fill = RED if int(now * 4) % 2 == 0 else mix(RED, BG, 0.5)
+                            edge, tcol, name = RED, TEXT, "CLEAR ALL?"
+                        c.create_rectangle(sx, cy - ih / 2, sx + sw, cy + ih / 2, fill=fill, outline=edge, width=1)
                         if full:
-                            self._text(sx + sw / 2, cy, name, sw * 0.88, ih * 0.6, TEXT if on else "#8a8a8a")
+                            self._text(sx + sw / 2, cy, name, sw * 0.88, ih * 0.6, tcol)
                         hit(sx, ry0, sx + sw, ry1, "sseg", (sym, k))
                 else:
                     values, fmt = item[3], item[4]
@@ -1137,8 +1185,11 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         if self.speed_slot is not None:
             items = [("SPEED", TEXT), ("TRACK %d" % (self.speed_slot + 1), GREEN), ("CLOSE", GREEN)]
         elif self.settings_open:
-            items = [("SETTINGS", TEXT), ("SWIPE \u2195 TO SCROLL" if self.s_max > 0 else "TAP TO CHANGE", DIM),
-                     ("CLOSE", GREEN)]
+            if self.grid_confirm and now < self.grid_confirm[1]:
+                mid_item = ("TAP AGAIN TO CLEAR", RED)
+            else:
+                mid_item = ("SWIPE \u2195 TO SCROLL" if self.s_max > 0 else "TAP TO CHANGE", DIM)
+            items = [("SETTINGS", TEXT), mid_item, ("CLOSE", GREEN)]
         else:
             part_txt = "PART %d" % (st["part"] + 1)
             if st["pend"] >= 0:
