@@ -193,7 +193,6 @@
         <urn:audiolooper:looper#spd35> ,
         <urn:audiolooper:looper#spd36> ,
         <urn:audiolooper:looper#sreset> ,
-        <urn:audiolooper:looper#bpb> ,
         <urn:audiolooper:looper#hold_ms> ,
         <urn:audiolooper:looper#reset_ms> ,
         <urn:audiolooper:looper#latency> ,
@@ -2056,16 +2055,7 @@
     pprops:notOnGUI true ;
     lv2:portProperty pprops:notOnGUI .
 
-# Этап 6: долей в такте (запасной), пороги жестов, компенсация задержки (мс).
-<urn:audiolooper:looper#bpb>
-    a lv2:Parameter ;
-    lv2:symbol "bpb" ;
-    rdfs:label "Beats Per Bar" ;
-    rdfs:range atom:Int ;
-    lv2:default 4 ; lv2:minimum 1 ; lv2:maximum 16 ;
-    pprops:notOnGUI true ;
-    lv2:portProperty pprops:notOnGUI .
-
+# Этап 6: пороги жестов, компенсация задержки (мс).
 <urn:audiolooper:looper#hold_ms>
     a lv2:Parameter ;
     lv2:symbol "hold_ms" ;

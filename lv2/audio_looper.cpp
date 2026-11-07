@@ -123,7 +123,6 @@ enum Param {
   PR_SGLIDE,                    // плавный ход скорости, мс
   PR_SPD0,                      // spd1..spd36: ручная скорость дорожки
   PR_SRESET = PR_SPD0 + kTracks,  // команда виджета: сброс скорости дорожки 1..6 текущего парта
-  PR_BPB,                       // долей в такте, пока Zynthian не прислал свой размер
   PR_HOLD,                      // порог удержания педали, мс
   PR_RHOLD,                     // порог удержания Reset, мс
   PR_LAT,                       // компенсация задержки, мс
@@ -167,7 +166,6 @@ void init_params() {
     std::snprintf(kParams[PR_SPD0 + t].sym, 16, "spd%d", t + 1);
   }
   kParams[PR_SRESET] = ParamDef{"sreset", 0.0f, 0.0f, 6.0f, false};
-  kParams[PR_BPB] = ParamDef{"bpb", 4.0f, 1.0f, 16.0f, false};
   kParams[PR_HOLD] = ParamDef{"hold_ms", 500.0f, 200.0f, 2000.0f, false};
   kParams[PR_RHOLD] = ParamDef{"reset_ms", 1000.0f, 500.0f, 3000.0f, false};
   kParams[PR_LAT] = ParamDef{"latency", 0.0f, 0.0f, 100.0f, false};
@@ -234,7 +232,6 @@ struct Plugin {
     s.spd_glide_ms = vals[PR_SGLIDE];
     s.latency_ms = vals[PR_LAT];
     looper->set_settings(s);
-    clock.set_default_bpb((int)vals[PR_BPB]);
     configure_buttons();
     // пул — только когда изменился сам параметр: смена стирает лупы
     // (если при загрузке дали меньше запрошенного, другие настройки не должны запускать замену)
@@ -286,7 +283,7 @@ struct Plugin {
     }
   }
   static bool is_setting(int i) {
-    return i < PR_LEV0 || i == PR_TGLIDE || i == PR_SSNAP || i == PR_SGLIDE || (i >= PR_BPB && i <= PR_POOL);
+    return i < PR_LEV0 || i == PR_TGLIDE || i == PR_SSNAP || i == PR_SGLIDE || (i >= PR_HOLD && i <= PR_POOL);
   }
   void apply_all() {
     apply_settings();

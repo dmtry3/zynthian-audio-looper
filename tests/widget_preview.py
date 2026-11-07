@@ -113,8 +113,7 @@ class Processor:
         self.controllers_dict["spd_snap"] = Ctrl("spd_snap", 0, 0, 2)
         self.controllers_dict["spd_glide"] = Ctrl("spd_glide", 150, 0, 2000)
         self.controllers_dict["tempo_glide"] = Ctrl("tempo_glide", 500, 100, 4000)
-        # этап 6: долей в такте, пороги жестов, компенсация задержки
-        self.controllers_dict["bpb"] = Ctrl("bpb", 4, 1, 16)
+        # этап 6: пороги жестов, компенсация задержки
         self.controllers_dict["hold_ms"] = Ctrl("hold_ms", 500, 200, 2000)
         self.controllers_dict["reset_ms"] = Ctrl("reset_ms", 1000, 500, 3000)
         self.controllers_dict["latency"] = Ctrl("latency", 0, 0, 100)
@@ -428,8 +427,6 @@ def main():
     check("TRACK 2 -> 2 BARS", cd["len2"].value == 2 and "2 BARS" in texts(wdg))
     slide_to("latency", 10)
     check("LATENCY 10 ms", cd["latency"].value == 10 and "10 ms" in texts(wdg))
-    slide_to("bpb", 3)
-    check("BEATS / BAR 3", cd["bpb"].value == 3)
     slide_to("hold_ms", 750)
     slide_to("reset_ms", 2000)
     check("пороги HOLD 750 ms и RESET HOLD 2.0 s", cd["hold_ms"].value == 750 and cd["reset_ms"].value == 2000

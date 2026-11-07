@@ -154,7 +154,6 @@ SETTINGS = [
     ("QUANTIZE", [
         ("seg", "mute_q", "MUTE AT", QUANT_NAMES),
         ("seg", "part_q", "PART AT", QUANT_NAMES),
-        ("sl", "bpb", "BEATS / BAR", list(range(1, 17)), lambda v: "%d" % v),
     ]),
     ("FADES", [
         ("sl", "fade_out", "FADE OUT", FADE_STEPS, _ms),
@@ -184,7 +183,7 @@ SCROLL_START_PX = 8     # палец ушёл по вертикали дальш
 SETTING_DEFAULTS = {"rec_order": 0, "mode": 1, "mute_q": 2, "part_q": 3, "tempo_glide": 500, "spd_snap": 0,
                     "spd_glide": 150, "fade_out": 200, "fade_in": 200, "rev_time": 50,
                     "len1": 0, "len2": 0, "len3": 0, "len4": 0, "len5": 0, "len6": 0, "limiter": 1, "grid": 1,
-                    "latency": 0, "bpb": 4, "hold_ms": 500, "reset_ms": 1000,
+                    "latency": 0, "hold_ms": 500, "reset_ms": 1000,
                     "pool_mb": 2048}
 
 

@@ -84,12 +84,10 @@ int main() {
     CHECK(pl.vals[PR_TMUTE] == 6.0f);
     on_param(&pl, PR_TMUTE);
     CHECK(pl.vals[PR_TMUTE] == 0.0f);
-    // настройки этапа 6: долей в такте, задержка, пороги жестов
-    set_param(&pl, PR_BPB, 3);
-    on_param(&pl, PR_BPB);
+    // настройки этапа 6: задержка, пороги жестов
     set_param(&pl, PR_LAT, 25);
     on_param(&pl, PR_LAT);
-    CHECK(pl.clock.bpb() == 3 && pl.looper->settings().latency_ms == 25.0f);
+    CHECK(pl.looper->settings().latency_ms == 25.0f);
     set_param(&pl, PR_LAT, 500);  // за пределом — до 100
     CHECK(pl.vals[PR_LAT] == 100.0f);
     set_param(&pl, PR_HOLD, 300);

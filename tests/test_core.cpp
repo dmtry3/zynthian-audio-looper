@@ -150,28 +150,6 @@ static void test_tempo_stop_start() {
   CHECK(std::fabs(k.beats()) < 1e-9);
 }
 
-// Долей в такте из настройки: пока Zynthian не прислал размер; счёт такта не прыгает.
-static void test_default_bpb() {
-  TempoClock k;
-  k.set_sample_rate(SR);
-  CHECK(k.bpb() == 4 && !k.bpb_from_host());
-  PositionMsg m;
-  m.has_bpm = m.has_speed = m.has_pos = true;  // без размера такта
-  m.bpm = 120; m.speed = 1; m.bar = 2; m.bar_beat = 1.5;
-  k.on_position(m);
-  k.set_default_bpb(3);
-  CHECK(k.bpb() == 3 && k.bar() == 2 && std::fabs(k.bar_beat() - 1.5) < 1e-9);
-  k.set_default_bpb(0);  // вне диапазона — без изменений
-  CHECK(k.bpb() == 3);
-  PositionMsg z;
-  z.has_bpb = true;
-  z.bpb = 7;
-  k.on_position(z);
-  CHECK(k.bpb() == 7 && k.bpb_from_host());
-  k.set_default_bpb(5);  // Zynthian главнее
-  CHECK(k.bpb() == 7);
-}
-
 static void test_midi_clock() {
   MidiClock c;
   c.set_sample_rate(SR);
@@ -195,7 +173,6 @@ int main() {
   test_gestures();
   test_tempo_clock();
   test_tempo_stop_start();
-  test_default_bpb();
   test_midi_clock();
   std::printf("%d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
