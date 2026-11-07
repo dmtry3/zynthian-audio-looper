@@ -28,7 +28,6 @@ GRID = "#2e2e2e"
 DIM = "#5a5a5a"
 TEXT = "#ffffff"
 GREEN = "#3ddc4a"      # активная дорожка, текущий парт
-FRAME = "#123f17"      # рамка активной дорожки: тот же зелёный, сильно приглушённый
 BLUE = "#4a86e8"       # играет
 RED = "#ff3b30"        # запись, конец цикла
 ORANGE = "#ffb000"     # овердаб
@@ -742,8 +741,6 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                 c.create_oval(x - 3, ry0 + 1, x + 3, ry0 + 7, fill=TEXT, width=0)
             elif state != ST_REC:
                 c.create_line(wx0, cy, wx1, cy, fill=GRID, width=1)
-            if active:
-                c.create_rectangle(x0 + part_w + 2, ry0 + 2, wx1, ry1 - 2, outline=FRAME, width=2)
         self._master(wx1 + 6, y0, x1 - 4, y1)
 
     # ---------- волны ----------
@@ -932,8 +929,6 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             has_loop = tr["state"] in (ST_PLAY, ST_DUB)
             if i:
                 c.create_line(cx0, y0, cx0, y1, fill="#1c1c1c", width=1)
-            if active:
-                c.create_rectangle(cx0 + 2, y0 + 1, cx0 + cw - 2, y1 - 1, outline=FRAME, width=2)
             # круг позиции с номером
             r = min(ew * 0.16, hh * 0.075)
             self._pie(mid, y0 + r + 3, r, col, tr["pos"] if has_loop else 0.0, empty=not has_loop)
