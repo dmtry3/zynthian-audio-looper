@@ -262,7 +262,7 @@ def main():
     m["o_bpb"], m["o_beat"] = 3.0, 2.5
     wdg.update()
     ovals = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "oval"]
-    check("3 точки долей + 4 точки партов + 4 круга дорожек + шестерёнка", len(ovals) == 3 + 4 + 4 + 2 and "2.3" in texts(wdg) and "3/4" in texts(wdg))
+    check("3 точки долей + 4 точки партов + шестерёнка (у пустых дорожек круга нет)", len(ovals) == 3 + 4 + 2 and "2.3" in texts(wdg) and "3/4" in texts(wdg))
 
     m["o_tsrc"] = 0.0
     wdg.update()

@@ -427,10 +427,10 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
 
     # ---------- общие элементы ----------
     def _pie(self, cx, cy, r, color, frac, empty):
-        """Круг позиции, как у Aeros: заполненный сектор = пройденная часть цикла."""
+        """Круг позиции, как у Aeros: заполненный сектор = пройденная часть цикла.
+        У пустой дорожки круга нет, остаётся только номер."""
         c = self.widget_canvas
         if empty:
-            c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=max(1, int(r * 0.12)))
             return
         c.create_oval(cx - r, cy - r, cx + r, cy + r, fill=mix(color, BG, 0.62), width=0)
         if frac > 0.002:
@@ -643,9 +643,6 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             pr = row_h * 0.11
             recorded = bool(st["parts"] >> i & 1)
             current, pending = i == st["part"], i == st["pend"]
-            if current:
-                sq = row_h * 0.2
-                c.create_rectangle(px - sq, cy - sq, px + sq, cy + sq, outline=DIM, width=1)
             col = GREEN if (current or pending) else ("#b0b0b0" if recorded else DIM)
             if not (pending and not blink):
                 if recorded or current:
