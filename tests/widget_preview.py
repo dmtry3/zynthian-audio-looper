@@ -188,6 +188,11 @@ def write_fake_peaks(path):
         f.write(buf)
 
 
+def fills_of(wdg):
+    c = wdg.widget_canvas
+    return [c.itemcget(i, "fill") for i in c.find_all() if c.type(i) != "image"]
+
+
 def texts(wdg):
     c = wdg.widget_canvas
     return [c.itemcget(i, "text") for i in c.find_all() if c.type(i) == "text"]
@@ -258,7 +263,7 @@ def main():
 
     m["o_action"], m["o_act_cnt"] = 1.0, 1.0
     wdg.update()
-    fills = [wdg.widget_canvas.itemcget(i, "fill") for i in wdg.widget_canvas.find_all()]
+    fills = fills_of(wdg)
     check("нажатие Rec горит красным во вкладке", mod.RED in fills and "REC / DUB" in texts(wdg))
 
     m["o_bar"], m["o_beat"] = 1.0, 0.05
@@ -293,7 +298,7 @@ def main():
     m["o_flags"] = float((1 << 2) | (1 << 7))  # дорожка 3 mute, дорожка 4 reverse
     m["o_track"] = 3.0
     wdg.update()
-    fills = [wdg.widget_canvas.itemcget(i, "fill") for i in wdg.widget_canvas.find_all()]
+    fills = fills_of(wdg)
     check("цвета состояний дорожек", all(col in fills for col in (mod.RED, mod.ORANGE, mod.GRAY)))
     check("reverse фиолетовый", mod.PURPLE in fills)
     check("при записи виден такт (3/4, записано 1,5 с — идёт 2-й)", "BAR 2" in texts(wdg))
@@ -310,14 +315,21 @@ def main():
     check("Free: вместо тактов секунды", "REC 1.5 s" in texts(wdg))
     cd0["mode"].value = 1
     no_overlap("800x480, дорожки играют")
-    polys = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "polygon"]
-    stip = [i for i in polys if wdg.widget_canvas.itemcget(i, "stipple")]
-    check("волны: сумма на играющих дорожках, овердаб полупрозрачно", len(stip) == 1 and len(polys) >= 3 + 1)
+    imgs = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "image"]
+
+    def wave_colors(row):
+        return {px for col in wdg.geo[row]["cols"] for px in col}
+    dub_mix = mod.mix(mod.LAYER_COLORS[1], mod.ORANGE, 0.5)
+    check("волны картинками на играющих дорожках, овердаб полупрозрачно поверх",
+          len(imgs) == 3 and mod.ORANGE in wave_colors(1) and dub_mix in wave_colors(1))
     m["o_st1"] = 3.0
     wdg.update()
-    polys = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "polygon"]
-    stip = [i for i in polys if wdg.widget_canvas.itemcget(i, "stipple")]
-    check("слои овердабов дорожки 1 полупрозрачно поверх", len(stip) == 3 + 1)
+    layer_mix = {mod.mix(mod.LAYER_COLORS[no], mod.BLUE, 0.5) for no in (1, 2, 3)}  # дорожка 1 играет: синяя
+    check("слои овердабов дорожки 1 полупрозрачно поверх", layer_mix <= wave_colors(0))
+    # пиксели картинки: середина волны дорожки 3 (mute) — серый
+    g = wdg.geo[2]
+    w_, h_ = g["size"]
+    check("картинка волны: в середине цвет дорожки", "#%02x%02x%02x" % g["img"].get(w_ // 2, h_ // 2) == mod.GRAY)
     no_overlap("800x480, волны")
     m["o_st1"] = 2.0
     # парты и Lock: записаны 1 и 3, текущий 1, ждёт 2; дорожка 3 с замком
@@ -550,7 +562,7 @@ def main():
     wdg.update()
     nums = [t for t in texts(wdg) if t in ("1", "2", "3", "4", "5", "6")]
     check("в 6×6 на Loop шесть дорожек", nums == ["1", "2", "3", "4", "5", "6"])
-    fills = [wdg.widget_canvas.itemcget(i, "fill") for i in wdg.widget_canvas.find_all()]
+    fills = fills_of(wdg)
     check("6×6: mute дорожки 5 серый, reverse дорожки 6 фиолетовый", mod.GRAY in fills and mod.PURPLE in fills)
     check("6×6: подписи парта и дорожки", "PART 6" in texts(wdg) and "TRACK 6" in texts(wdg))
     no_overlap("800x480, Loop 6×6")
