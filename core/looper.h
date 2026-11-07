@@ -324,6 +324,7 @@ class Looper {
   bool time_seen_ = false;
   bool user_stop_ = false;  // лупы остановлены педалью Play/Stop
   bool tstop_ = false;      // лупы затихли из-за остановки транспорта
+  bool hold_ = false;       // транспорт стоит и ждать нечего: счёт тактов и затихшие лупы замерли
   int cur_part_ = 0;
   int pend_part_ = -1;      // парт, ждущий границы (-1 нет)
   bool clones_pending_ = false;

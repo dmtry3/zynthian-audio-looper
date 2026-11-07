@@ -571,6 +571,12 @@ static void test_transport_stop_start() {
   CHECK(s.v().stopped && s.v().state == 3);
   CHECK(rms(s.slice(t_stop, 2400)) > 0.05f);           // затухает не сразу (200 мс)
   CHECK(rms(s.slice(s.t - 9600, 9600)) < 1e-6f);       // потом тишина
+  {  // затихла: курсор и счёт тактов стоят
+    const float p0 = s.v().pos;
+    const double g0 = s.lp->grid_beats();
+    s.run(BAR / 2);
+    CHECK(s.v().pos == p0 && s.lp->grid_beats() == g0);
+  }
   s.cmd(Cmd::Rec);                                      // Rec на остановленной: молча ничего
   CHECK(s.v().state == 3);
   const uint64_t t_start = s.t;

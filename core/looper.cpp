@@ -1109,6 +1109,8 @@ void Looper::track_sample(int ti, uint32_t i, float il, float ir, float& ol, flo
     if (t.st == TState::Dub && t.layer >= 0) dub_resampled(ti, il, ir, step);
   }
 
+  // остановлена транспортом и затихла: позиция стоит до пуска (wake поставит её заново)
+  if (hold_ && t.stopped && t.sgain <= 0.0f && t.xf_len == 0) return;
   // движение: reverse разворачивается как лента (скорость плавно проходит через 0)
   uint64_t L = t.len;
   if (L == 0 && t.xf_from >= 0) L = pool_.buf(t.xf_from).len;
@@ -1514,6 +1516,13 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
     }
   }
   if (pend_part_ >= 0 && set_.part_q == 3 && master_ < 0) part_due_ = true;  // нечему доигрывать
+  // Транспорт остановлен и лупы затихли: счёт тактов и позиции стоят (курсоры не бегут).
+  // Считаем дальше, только если что-то ждёт черты или идёт запись основы.
+  hold_ = tstop_ && ps_pending_ == 0 && pend_part_ < 0;
+  for (int k = 0; hold_ && k < kTracks; ++k) {
+    const TState st = tr_[k].st;
+    if (st == TState::Armed || st == TState::Rec || st == TState::Closing) hold_ = false;
+  }
   for (uint32_t i = 0; i < n; ++i) {
     // компенсация задержки: запись начинается ровно через lat_ кадров после черты
     // (до проверки черты: взведённая в этом кадре дорожка начинает отсчёт со следующего)
@@ -1583,7 +1592,7 @@ void Looper::process(const float* in_l, const float* in_r, float* out_l, float* 
     const float dg = dg0 + dgs * (float)i;
     if (out_l) out_l[i] = ol + dg * il;
     if (out_r) out_r[i] = orr + dg * ir;
-    beats_ += bpf_;
+    if (!hold_) beats_ += bpf_;
   }
   // конец блока: коэффициенты микшера, пики с плавным спадом
   const float fall = (float)std::pow(10.0, -kPeakFallDbS * (double)n / sr_ / 20.0);
