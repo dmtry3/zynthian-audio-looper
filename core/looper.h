@@ -186,6 +186,9 @@ class Looper {
     // запись основы
     int32_t rec = -1;
     uint64_t rec_frames = 0, rec_target = 0;
+    // волна записи: кадров в колонке, кадров в текущей колонке, её минимум и максимум
+    uint64_t rpk_step = 0, rpk_n = 0;
+    float rpk_mn = 0.0f, rpk_mx = 0.0f;
     // стык цикла и овердаб
     uint64_t seam_t = 0;     // кадров после закрытия цикла; < xf — пишется хвост
     int32_t layer = -1;
@@ -230,6 +233,8 @@ class Looper {
     t.pdirty = true;
   }
   void live_peaks(int ti, uint64_t p);
+  void rec_peaks_start(int ti);
+  void rec_peaks(int ti, float l, float r);
   void transport_stop();
   void transport_start();
   void wake(int ti);

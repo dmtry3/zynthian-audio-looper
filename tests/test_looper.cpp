@@ -591,6 +591,36 @@ static void test_play_stop() {
 
 // Пики для волн: после записи — волна суммы, после овердабов — слои (новые первыми),
 // во время овердаба волна слоя растёт вживую; undo убирает слой.
+// Волна записи основы растёт вживую: колонки по 20 мс, кончились — сливаются попарно;
+// при фиксированной длине вся полоса — эта длина; после закрытия цикла волна записи гаснет.
+static void test_rec_peaks() {
+  Sim s;
+  const PeakTrack& pk = s.peaks->t[0];
+  s.in_l = sine(220.0, 0.5f);
+  s.cmd(Cmd::Rec);
+  uint32_t live0 = pk.live;
+  s.run(24000);  // 0,5 с
+  CHECK(s.v().state == 2 && pk.live > live0);
+  CHECK(pk.rec_cols >= 24 && pk.rec_cols <= 26 && std::fabs(pk.rec_col_s - 0.02f) < 1e-4f);
+  CHECK(pk.rec.mx[10] >= 60 && pk.rec.mx[10] <= 66 && pk.rec.mn[10] <= -60 && pk.rec.mx[100] == 0);
+  s.run(48000 * 12);  // 12,5 с: 512 колонок по 20 мс кончились, колонки по 40 мс
+  CHECK(std::fabs(pk.rec_col_s - 0.04f) < 1e-4f && pk.rec_cols > 300 && pk.rec_cols < 320);
+  CHECK(pk.rec.mx[5] >= 60 && pk.rec.mx[200] >= 60 && pk.rec.mx[300] >= 60 && pk.rec.mx[400] == 0);
+  s.cmd(Cmd::Rec);
+  s.run(BLOCK * 8);
+  CHECK(s.v().state == 3 && pk.rec_cols == 0);
+  // фиксированная длина 2 такта при 120 BPM = 4 с: 512 колонок на 4 с
+  Sim q(64, true);
+  q.set.length[0] = 2;
+  q.apply();
+  q.in_l = sine(220.0, 0.5f);
+  q.cmd(Cmd::Rec);
+  q.run(48000 * 5);
+  const PeakTrack& qk = q.peaks->t[0];
+  CHECK(q.v().state == 3 && qk.rec_cols == 0);
+  CHECK(std::fabs(qk.rec_col_s * 512.0f - 4.0f) < 0.01f);
+}
+
 static void test_peaks() {
   Sim s;
   const uint64_t L = 48000;
@@ -1142,6 +1172,7 @@ int main() {
   test_transport_stop_start();
   test_play_stop();
   test_peaks();
+  test_rec_peaks();
   test_parts_lock();
   test_parts_edges();
   test_part_at_loop_end();

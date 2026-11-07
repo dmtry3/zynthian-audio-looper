@@ -129,13 +129,14 @@ def load_widget():
 
 
 def write_fake_peaks(path):
-    """Подставные пики в раскладке PeakShm: дорожка 1 — основа и 3 слоя, 2 — идёт овердаб, 3 — основа."""
+    """Подставные пики в раскладке PeakShm: дорожка 1 — основа и 3 слоя, а также запись (если её состояние REC),
+    2 — идёт овердаб, 3 — основа."""
     import math
     import struct as st
     cols, nlay = 512, 8
-    track = 16 + 4 * nlay + 2 * cols * (2 + nlay)
+    track = 24 + 4 * nlay + 2 * cols * (3 + nlay)
     buf = bytearray(16 + 4 * track)
-    st.pack_into("<4I", buf, 0, 0x31504C41, cols, 4, nlay)
+    st.pack_into("<4I", buf, 0, 0x32504C41, cols, 4, nlay)
 
     def wave(f, amp, a=0, b=cols, phase=0.0):
         mn, mx = [0] * cols, [0] * cols
@@ -152,12 +153,17 @@ def write_fake_peaks(path):
     def track_off(i):
         return 16 + i * track
 
-    sum_off, dub_off = 16 + 4 * nlay, 16 + 4 * nlay + 2 * cols
-    lay_off = dub_off + 2 * cols
+    sum_off = 24 + 4 * nlay
+    dub_off = sum_off + 2 * cols
+    rec_off = dub_off + 2 * cols
+    lay_off = rec_off + 2 * cols
     # дорожка 1: основа + 3 слоя
     o = track_off(0)
     st.pack_into("<4I", buf, o, 2, 0, 3, 0)
-    st.pack_into("<3I", buf, o + 16, 3, 2, 1)
+    st.pack_into("<3I", buf, o + 24, 3, 2, 1)
+    # и идёт запись: 300 колонок по 10 мс (вся полоса 5,12 с)
+    st.pack_into("<If", buf, o + 16, 300, 0.01)
+    put(o + rec_off, *wave(10, 0.7, 0, 300))
     put(o + sum_off, *wave(8, 0.75))
     put(o + lay_off, *wave(16, 0.35, 300, 512))
     put(o + lay_off + 2 * cols, *wave(6, 0.3, 120, 330, 1.0))
@@ -283,6 +289,19 @@ def main():
     fills = [wdg.widget_canvas.itemcget(i, "fill") for i in wdg.widget_canvas.find_all()]
     check("цвета состояний дорожек", all(col in fills for col in (mod.RED, mod.ORANGE, mod.GRAY)))
     check("reverse фиолетовый", mod.PURPLE in fills)
+    check("при записи виден такт (3/4, записано 1,5 с — идёт 2-й)", "BAR 2" in texts(wdg))
+    tl = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "line"
+          and wdg.widget_canvas.itemcget(i, "fill") == "#5a2020"]
+    check("при записи черты тактов (5,12 с, такт 1,5 с — 3 черты)", len(tl) == 3)
+    cd0 = proc.controllers_dict
+    cd0["len1"].value = 4
+    wdg.update()
+    check("фиксированная длина: счёт 2 / 4 BARS", "2 / 4 BARS" in texts(wdg))
+    cd0["len1"].value = 0
+    cd0["mode"].value = 0
+    wdg.update()
+    check("Free: вместо тактов секунды", "REC 1.5 s" in texts(wdg))
+    cd0["mode"].value = 1
     no_overlap("800x480, дорожки играют")
     polys = [i for i in wdg.widget_canvas.find_all() if wdg.widget_canvas.type(i) == "polygon"]
     stip = [i for i in polys if wdg.widget_canvas.itemcget(i, "stipple")]

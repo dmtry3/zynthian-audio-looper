@@ -8,6 +8,7 @@ namespace {
 constexpr uint32_t kReserve = 4;     // кусков про запас, чтобы запись не упёрлась в ноль
 constexpr uint64_t kNoSeam = ~0ull;
 constexpr double kLatePressS = 0.2;
+constexpr double kRecColS = 0.02;  // волна записи: секунд в колонке до первого слияния
 constexpr double kMixSmoothS = 0.02;   // сглаживание уровня и панорамы
 constexpr float kLimThr = 0.891f;      // ограничитель мастера: −1 дБ
 constexpr float kLimRelS = 0.15f;      // отпускание ограничителя
@@ -171,6 +172,55 @@ void Looper::start_rec(int ti) {
   t.rec_bpf = bpf_;
   t.tspd = 1.0;
   t.st = TState::Rec;
+  rec_peaks_start(ti);
+}
+
+// Волна записи основы. При фиксированной длине вся полоса — эта длина;
+// при свободной колонка сначала 20 мс, а когда колонки кончаются, они сливаются попарно.
+void Looper::rec_peaks_start(int ti) {
+  Track& t = tr_[ti];
+  t.rpk_step = t.rec_target ? (t.rec_target + kPeakCols - 1) / kPeakCols
+                            : (uint64_t)std::llround(sr_ * kRecColS);
+  if (t.rpk_step < 1) t.rpk_step = 1;
+  t.rpk_n = 0;
+  t.rpk_mn = t.rpk_mx = 0.0f;
+  if (!peaks_ || !in_cur(ti)) return;
+  PeakTrack& pk = peaks_->t[ti % kSlots];
+  clear_wave(pk.rec);
+  pk.rec_col_s = (float)((double)t.rpk_step / sr_);
+  __atomic_store_n(&pk.rec_cols, 0u, __ATOMIC_RELEASE);
+  t.plive = true;
+}
+
+void Looper::rec_peaks(int ti, float l, float r) {
+  Track& t = tr_[ti];
+  if (l < t.rpk_mn) t.rpk_mn = l;
+  if (r < t.rpk_mn) t.rpk_mn = r;
+  if (l > t.rpk_mx) t.rpk_mx = l;
+  if (r > t.rpk_mx) t.rpk_mx = r;
+  if (++t.rpk_n < t.rpk_step) return;
+  const float mn = t.rpk_mn, mx = t.rpk_mx;
+  t.rpk_n = 0;
+  t.rpk_mn = t.rpk_mx = 0.0f;
+  if (!peaks_ || !in_cur(ti)) return;
+  PeakTrack& pk = peaks_->t[ti % kSlots];
+  uint32_t n = pk.rec_cols;
+  if (n >= kPeakCols) {  // колонки кончились: вдвое крупнее (512 сравнений раз в несколько секунд)
+    for (uint32_t c = 0; c < kPeakCols / 2; ++c) {
+      const int8_t a = pk.rec.mn[2 * c], b = pk.rec.mn[2 * c + 1];
+      const int8_t x = pk.rec.mx[2 * c], y = pk.rec.mx[2 * c + 1];
+      pk.rec.mn[c] = a < b ? a : b;
+      pk.rec.mx[c] = x > y ? x : y;
+    }
+    for (uint32_t c = kPeakCols / 2; c < kPeakCols; ++c) pk.rec.mn[c] = pk.rec.mx[c] = 0;
+    n = kPeakCols / 2;
+    t.rpk_step *= 2;
+    pk.rec_col_s = (float)((double)t.rpk_step / sr_);
+  }
+  pk.rec.mn[n] = peak_q(mn);
+  pk.rec.mx[n] = peak_q(mx);
+  __atomic_store_n(&pk.rec_cols, n + 1, __ATOMIC_RELEASE);
+  t.plive = true;
 }
 
 void Looper::cancel_rec(int ti) {
@@ -179,6 +229,7 @@ void Looper::cancel_rec(int ti) {
   t.rec = -1;
   t.rec_frames = t.rec_target = 0;
   t.st = TState::Empty;
+  if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % kSlots].rec_cols, 0u, __ATOMIC_RELEASE);
 }
 
 void Looper::request_close(int ti) {
@@ -211,6 +262,7 @@ void Looper::close_loop(int ti, uint64_t L) {
   int32_t base = t.rec;
   t.rec = -1;
   t.rec_frames = t.rec_target = 0;
+  if (peaks_ && in_cur(ti)) __atomic_store_n(&peaks_->t[ti % kSlots].rec_cols, 0u, __ATOMIC_RELEASE);
   clear_redo(t);
   t.sum = base;
   t.len = L;
@@ -896,6 +948,7 @@ void Looper::track_sample(int ti, uint32_t i, float il, float ir, float& ol, flo
       const float g = f < xf_ ? (float)f / (float)xf_ : 1.0f;  // fade in начала записи
       c->l[f & kChunkMask] = il * g;
       c->r[f & kChunkMask] = ir * g;
+      rec_peaks(ti, il * g, ir * g);
       ++t.rec_frames;
       if (t.rec_target && t.rec_frames >= t.rec_target) {
         close_loop(ti, t.rec_target);

@@ -2,7 +2,8 @@
 // Лежат в общей памяти (файл /dev/shm/audio_looper_<pid>, его создаёт LV2-обёртка),
 // виджет читает их без блокировок. Запись под счётчиком seq: нечётный — идёт запись.
 // Полностью пересчитывает рабочий поток (при окончании записи, овердаба, undo, redo, reset);
-// аудиопоток только дорисовывает колонки под линией позиции во время овердаба (счётчик live).
+// аудиопоток только дорисовывает колонки под линией позиции во время овердаба (счётчик live)
+// и пишет волну записи основы: колонка = rec_col_s секунд, кончились колонки — сливает их попарно.
 #pragma once
 #include <cstdint>
 
@@ -12,7 +13,7 @@ namespace alp {
 
 constexpr uint32_t kPeakCols = 512;
 constexpr uint32_t kPeakLayers = 8;            // последние слои овердабов, видимые отдельно
-constexpr uint32_t kPeakMagic = 0x31504C41u;   // "ALP1"
+constexpr uint32_t kPeakMagic = 0x32504C41u;   // "ALP2": с волной записи
 
 struct PeakWave {
   int8_t mn[kPeakCols];
@@ -24,9 +25,12 @@ struct PeakTrack {
   uint32_t live;                     // растёт, когда аудиопоток дорисовал колонки
   uint32_t nlayers;                  // сколько слоёв в layer[] (новые первыми)
   uint32_t dub_active;               // идёт овердаб: волна dub растёт вживую
+  uint32_t rec_cols;                 // идёт запись основы: сколько колонок rec заполнено
+  float rec_col_s;                   // секунд записи в одной колонке rec
   uint32_t layer_no[kPeakLayers];    // номер слоя с начала дорожки (для постоянного цвета)
   PeakWave sum;                      // всё, что играет
   PeakWave dub;                      // текущий овердаб
+  PeakWave rec;                      // запись основы, растёт слева направо
   PeakWave layer[kPeakLayers];       // слои овердабов, новые первыми
 };
 
@@ -35,7 +39,7 @@ struct PeakShm {
   PeakTrack t[4];
 };
 
-static_assert(sizeof(PeakTrack) == 16 + 4 * kPeakLayers + 2 * kPeakCols * (2 + kPeakLayers), "раскладка для виджета");
+static_assert(sizeof(PeakTrack) == 24 + 4 * kPeakLayers + 2 * kPeakCols * (3 + kPeakLayers), "раскладка для виджета");
 
 inline int8_t peak_q(float v) {
   float x = v * 127.0f;

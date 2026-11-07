@@ -58,14 +58,15 @@ ACTIONS = [
     ("MIXER", TEXT),
 ]
 # Пики волн: общая память с плагином, раскладка как PeakShm в core/peaks.h
-PK_MAGIC = 0x31504C41
+PK_MAGIC = 0x32504C41                   # "ALP2": с волной записи
 PK_COLS = 512
 PK_LAYERS = 8
 PK_HDR = 16
-PK_TRACK = 16 + 4 * PK_LAYERS + 2 * PK_COLS * (2 + PK_LAYERS)
-PK_SUM = 16 + 4 * PK_LAYERS             # смещения внутри дорожки
+PK_TRACK = 24 + 4 * PK_LAYERS + 2 * PK_COLS * (3 + PK_LAYERS)
+PK_SUM = 24 + 4 * PK_LAYERS             # смещения внутри дорожки
 PK_DUB = PK_SUM + 2 * PK_COLS
-PK_LAY = PK_DUB + 2 * PK_COLS
+PK_REC = PK_DUB + 2 * PK_COLS
+PK_LAY = PK_REC + 2 * PK_COLS
 PEAKS_PATH_OVERRIDE = None              # для превью без Zynthian
 # Цвета слоёв овердабов (полупрозрачно поверх волны), по номеру слоя
 LAYER_COLORS = ["#ff6b6b", "#ffd43b", "#69db7c", "#4dabf7", "#da77f2", "#ff922b", "#38d9a9", "#f783ac"]
@@ -677,12 +678,11 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             wx0 = x0 + part_w + row_h * 0.9
             bw = wx1 - wx0
             if state == ST_REC:
-                band = row_h * 0.26
-                c.create_rectangle(wx0, cy - band, wx1, cy + band, fill=mix(color, BG, 0.7), width=0)
+                self._rec_wave(st, i, wx0, wx1, cy, row_h, color)
             if has_loop:
                 self._waves(i, wx0, wx1, cy, row_h * 0.42, color, tr["pos"], tr["reversed"])
-            if has_loop or state == ST_REC:
-                if has_loop and st["quantize"]:
+            if has_loop:
+                if st["quantize"]:
                     # тонкие линии долей, толстые — тактов
                     beats = tr["len"] * beats_per_s
                     nb = int(round(beats))
@@ -692,14 +692,11 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
                             bar_line = b % st["bpb"] == 0
                             c.create_line(x, cy - row_h * 0.38, x, cy + row_h * 0.38,
                                           fill="#9a9a9a" if bar_line else "#3c3c3c", width=2 if bar_line else 1)
-                if has_loop:
-                    c.create_line(wx1 - 1, ry0 + 3, wx1 - 1, ry1 - 3, fill=RED, width=2)  # конец цикла
-                    x = wx0 + bw * min(1.0, max(0.0, tr["pos"]))
-                    c.create_line(x, ry0 + 3, x, ry1 - 3, fill=TEXT, width=2)              # позиция
-                    c.create_oval(x - 3, ry0 + 1, x + 3, ry0 + 7, fill=TEXT, width=0)
-                else:
-                    self._text(wx0 + bw / 2, cy, "REC %.1f s" % tr["len"], bw * 0.4, row_h * 0.3, TEXT)
-            else:
+                c.create_line(wx1 - 1, ry0 + 3, wx1 - 1, ry1 - 3, fill=RED, width=2)  # конец цикла
+                x = wx0 + bw * min(1.0, max(0.0, tr["pos"]))
+                c.create_line(x, ry0 + 3, x, ry1 - 3, fill=TEXT, width=2)              # позиция
+                c.create_oval(x - 3, ry0 + 1, x + 3, ry0 + 7, fill=TEXT, width=0)
+            elif state != ST_REC:
                 c.create_line(wx0, cy, wx1, cy, fill=GRID, width=1)
             if active:
                 c.create_rectangle(x0 + part_w + 2, ry0 + 2, wx1, ry1 - 2, outline=FRAME, width=2)
@@ -750,10 +747,14 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
             if seq & 1:
                 return old  # плагин как раз пишет
             fmt = "%db" % PK_COLS
-            nos = struct.unpack_from("<%dI" % PK_LAYERS, mm, off + 16)
+            nos = struct.unpack_from("<%dI" % PK_LAYERS, mm, off + 24)
             d = {"seq": seq, "live": live,
                  "sum": (struct.unpack_from(fmt, mm, off + PK_SUM), struct.unpack_from(fmt, mm, off + PK_SUM + PK_COLS)),
-                 "dub": None, "layers": []}
+                 "dub": None, "layers": [], "rec": None}
+            rec_cols, rec_col_s = struct.unpack_from("<If", mm, off + 16)
+            if 0 < rec_cols <= PK_COLS:  # идёт запись основы
+                d["rec"] = (rec_cols, rec_col_s, struct.unpack_from("%db" % rec_cols, mm, off + PK_REC),
+                            struct.unpack_from("%db" % rec_cols, mm, off + PK_REC + PK_COLS))
             if dub:
                 d["dub"] = (struct.unpack_from(fmt, mm, off + PK_DUB),
                             struct.unpack_from(fmt, mm, off + PK_DUB + PK_COLS))
@@ -789,6 +790,52 @@ class zynthian_widget_audio_looper(zynthian_widget_base.zynthian_widget_base):
         for j in range(npts - 1, -1, -1):
             botrev += bot[2 * j:2 * j + 2]
         return top, botrev, npts
+
+    def _rec_wave(self, st, i, x0, x1, cy, row_h, color):
+        """Запись основы: волна растёт слева направо, черты тактов, счёт тактов.
+        Фиксированная длина — вся полоса и есть цикл; свободная — полоса заполняется,
+        потом колонки сливаются вдвое (это делает ядро) и волна сжимается к левой половине."""
+        c = self.widget_canvas
+        tr = st["tracks"][i]
+        bw = x1 - x0
+        hh = row_h * 0.42
+        c.create_rectangle(x0, cy - hh, x1, cy + hh, fill=mix(color, BG, 0.88), width=0)
+        d = self._read_peaks(i)
+        rec = d.get("rec") if d else None
+        n, col_s = (rec[0], rec[1]) if rec else (0, 0.0)
+        span_s = col_s * PK_COLS if col_s > 0 else 0.0     # секунд во всю ширину полосы
+        bars_txt = None
+        if st["quantize"] and st["bpm"] > 0:
+            bar_s = st["bpb"] * 60.0 / st["bpm"]
+            if span_s > 0 and bar_s > 0 and span_s / bar_s <= 64:
+                k = 1
+                while k * bar_s < span_s - 1e-3:     # черты тактов
+                    x = x0 + bw * k * bar_s / span_s
+                    c.create_line(x, cy - hh, x, cy + hh, fill="#5a2020", width=2)
+                    k += 1
+            done = int(tr["len"] / bar_s + 1e-6) if bar_s > 0 else 0
+            target = self._zval("len%d" % (i + 1))
+            if target > 0:
+                bars_txt = "%d / %d BARS" % (min(done + 1, target), target)
+            else:
+                bars_txt = "BAR %d" % (done + 1)
+        if rec and n >= 2:
+            k = hh * min(4.0, 120.0 / max(1, max(rec[3]), -min(rec[2]))) / 127.0
+            step = max(1, int(n / max(16.0, bw * n / PK_COLS / 2.0)))
+            top, bot = [], []
+            for a in range(0, n, step):
+                e = min(n, a + step)
+                x = x0 + bw * (a + e) / 2.0 / PK_COLS
+                top += [x, cy - max(0.5, max(rec[3][a:e]) * k)]
+                bot += [x, cy - min(-0.5, min(rec[2][a:e]) * k)]
+            botrev = []
+            for j in range(len(bot) // 2 - 1, -1, -1):
+                botrev += bot[2 * j:2 * j + 2]
+            c.create_polygon(top + botrev, fill=color, outline="")
+            xe = x0 + bw * n / PK_COLS
+            c.create_line(xe, cy - hh, xe, cy + hh, fill=TEXT, width=2)       # голова записи
+        txt = bars_txt or "REC %.1f s" % tr["len"]
+        self._text(x1 - 6, cy - hh * 0.62, txt, bw * 0.3, row_h * 0.26, TEXT, "e")
 
     def _waves(self, i, x0, x1, cy, hh, color, pos, reversed_):
         d = self._read_peaks(i)
